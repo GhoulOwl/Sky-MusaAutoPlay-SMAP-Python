@@ -70,6 +70,9 @@ class Waveform(QWidget):
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, '选择歌曲后，加载真实波形并试听选段')
             return
         origin, duration = self.data['origin'], self.data['duration']
+        if self.data.get('kind') == 'midi':
+            p.setPen(QColor(c['muted']))
+            p.drawText(QRectF(12, 94, self.width() - 24, 20), 'MIDI 时间范围 · 音符见下方曲谱预览')
         p.fillRect(QRectF(self.x(origin), 24, self.x(origin + duration) - self.x(origin), 68), QColor(c['raised']))
         peaks = self.data['peaks']
         p.setPen(QPen(QColor(c['muted']), 1))

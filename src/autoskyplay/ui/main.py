@@ -94,9 +94,21 @@ class Bridge(QObject):
 class MainWindow(QMainWindow):
     netease_auth_changed = Signal()
 
+    def expire_download_cache(self):
+        from ..transcription.cache import DownloadCache
+        try:
+            DownloadCache(self.store.directory).prune()
+        except OSError:
+            log.exception('Unable to expire transcription download cache')
+
     def __init__(self, store, no_audio=False, no_global=False, restore_netease=True):
         super().__init__()
         self.store, self.no_audio, self.no_global = store, no_audio, no_global
+        self.download_cache_timer = QTimer(self)
+        self.download_cache_timer.setInterval(60 * 60 * 1000)
+        self.download_cache_timer.timeout.connect(self.expire_download_cache)
+        self.download_cache_timer.start()
+        self.expire_download_cache()
         self.bridge = Bridge(self)
         self.player = Player(self.bridge.notes.emit, self.bridge.done.emit, self.bridge.error.emit)
         self.mixer = Mixer()

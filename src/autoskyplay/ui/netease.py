@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -173,12 +174,20 @@ class NeteaseSongDialog(ServiceDialog):
         self.setWindowTitle("选择网易云歌曲" if picker else "从网易云获取")
         self.resize(810, 530)
         self.selection = None
+        self.local_path = None
         self.songs = []
         self.offset = 0
         self.total = 0
         self.query = ""
         root = QVBoxLayout(self)
-        root.addWidget(label("选择歌曲" if picker else "填写曲名、歌手与专辑封面", "heading"))
+        title = QHBoxLayout()
+        title.addWidget(label("选择歌曲" if picker else "填写曲名、歌手与专辑封面", "heading"))
+        title.addStretch()
+        if picker:
+            self.local_button = QPushButton("本地上传")
+            self.local_button.clicked.connect(self.pick_local)
+            title.addWidget(self.local_button)
+        root.addLayout(title)
         self.session = label("", "muted")
         root.addWidget(self.session)
         row = QHBoxLayout()
@@ -244,6 +253,14 @@ class NeteaseSongDialog(ServiceDialog):
             self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
             self.table.setColumnWidth(1, 68)
         self.mode_changed()
+
+    def pick_local(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, '选择本地音频或 MIDI', '',
+            '音频 / MIDI (*.mp3 *.wav *.flac *.ogg *.aiff *.aif *.mid *.midi);;所有文件 (*)')
+        if path:
+            self.local_path = path
+            self.accept()
 
     def update_session(self):
         user = self.client.user

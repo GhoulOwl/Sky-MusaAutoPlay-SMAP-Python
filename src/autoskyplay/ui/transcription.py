@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import queue
+import shutil
 import threading
 from pathlib import Path
 
@@ -18,10 +20,12 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -34,9 +38,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..audio import INSTRUMENTS
+from ..netease import NeteaseAudio, NeteaseSong
 from ..playback import Player, State
+from ..transcription.cache import DownloadCache
 from ..transcription.drafts import DraftStore
 from ..transcription.engine import find_engine, install_engine
+from ..transcription.local import MidiResult, read_midi
 from ..transcription.melody import export_midi, to_score
 from ..transcription.source import AudioSource, load_waveform
 from ..transcription.task import TranscriptionTask
@@ -67,6 +74,7 @@ class TranscriptionDialog(ServiceDialog):
         self.busy = self.saved = self.installing = self.edited = False
         self.restoring = False
         self.draft_id = None
+        self.draft_title = None
         self.draft_write_failed = False
         self.media_dir = self.source_dir = None
         self.source_job = None
@@ -171,12 +179,8 @@ class TranscriptionDialog(ServiceDialog):
         self.history_list = QListWidget()
         self.history_list.itemClicked.connect(self.open_draft)
         history.addWidget(self.history_list, 1)
-        self.delete_draft_button = QPushButton("删除所选草稿")
-        self.delete_draft_button.clicked.connect(self.delete_draft)
-        history.addWidget(self.delete_draft_button)
-        self.cache_button = QPushButton("清理音频缓存")
-        self.cache_button.clicked.connect(self.clear_audio_cache)
-        history.addWidget(self.cache_button)
+        self.history_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(self.draft_menu)
         self.splitter.addWidget(self.history_panel)
         center = QWidget()
         central = QVBoxLayout(center)
@@ -400,8 +404,7 @@ class TranscriptionDialog(ServiceDialog):
         if busy:
             self.stop_preview()
         self.busy = busy
-        for widget in (self.fetch, self.install_button, self.history_list, self.delete_draft_button,
-                       self.cache_button, self.start_time, self.end_time, self.all_range, self.short,
+        for widget in (self.fetch, self.install_button, self.history_list, self.start_time, self.end_time, self.all_range, self.short,
                        self.waveform, self.restore_audio):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
@@ -427,20 +430,169 @@ class TranscriptionDialog(ServiceDialog):
             widget.setEnabled(not self.busy and bool(playable))
         self.preview_mode.model().item(1).setEnabled(bool(self.media_dir and (self.media_dir / 'vocals.wav').exists()))
         self.preview_mode.model().item(2).setEnabled(self.score is not None)
-        self.begin.setText('重新识别' if self.result else '开始扒谱')
+        midi = isinstance(self.result, MidiResult)
+        self.begin.setText('转换 MIDI 选段' if midi else '重新识别' if self.result else '开始扒谱')
+        self.threshold.setEnabled(not self.busy and not midi)
+        self.minimum.setEnabled(not self.busy and not midi)
         self.save.setText('再次保存到曲库' if self.saved else '保存到曲库')
-        missing = self.song is not None and not (self.source_dir and (self.source_dir / 'source.audio').exists())
+        missing = self.song is not None and not (self.source_dir and
+                   ((self.source_dir / 'source.audio').exists() or (self.source_dir / 'source.mid').exists()))
         self.restore_audio.setVisible(missing or (self.song is not None and self.audio is None))
+        if midi:
+            self.preview_mode.model().item(0).setEnabled(False)
+        else:
+            self.preview_mode.model().item(0).setEnabled(True)
 
     def choose_song(self):
         if self.busy:
             return
         self.flush_remap()
         dialog = NeteaseSongDialog(self, picker=True)
-        if dialog.exec() and dialog.selection:
+        if not dialog.exec():
+            return
+        if dialog.local_path:
+            self.import_local(dialog.local_path)
+        elif dialog.selection:
             song, cover = dialog.selection
             self.identifier.setText(song.id)
             self.fetch_song(cover)
+
+    def import_local(self, path):
+        path = Path(path)
+        if self.busy:
+            return
+        self.flush_remap()
+        if not self.persist_draft():
+            return
+        try:
+            limit = 10 if path.suffix.lower() in ('.mid', '.midi') else 100
+            if not path.is_file() or path.stat().st_size > limit * 1024**2:
+                raise ValueError(f'请选择不超过 {limit} MB 的有效文件')
+            with path.open('rb') as stream:
+                ident = 'local-' + hashlib.file_digest(stream, 'sha256').hexdigest()
+        except (OSError, ValueError) as exc:
+            self.failed(str(exc))
+            return
+        self.discard_result()
+        self.release_source()
+        self.waveform.data = None
+        self.waveform.update()
+        self.preview_mode.setCurrentIndex(0)
+        self.song = NeteaseSong(ident, path.stem, '', '', '', 0)
+        self.audio = NeteaseAudio(ident, '', 0)
+        self.set_selection(0, 30)
+        self.update_song_card()
+        if path.suffix.lower() not in ('.mid', '.midi'):
+            self.prepare_source(local_path=path)
+            return
+        from ..midi import MidiImporter
+        self.set_busy(True)
+        self.status.setText('读取 MIDI 音轨…')
+        source = AudioSource(self.host.store.directory, self.client, self.song, self.audio, local_path=path)
+        self.source_job = source
+        # Copy in this dialog's owned directory; cancelling/closing removes it.
+        try:
+            shutil.copyfile(path, source.work / 'source.mid')
+        except OSError as exc:
+            self.audio = None
+            self.set_busy(False)
+            self.release_source()
+            self.failed(str(exc))
+            return
+        source.completed.set()
+        def inspect():
+            importer = MidiImporter(source.work / 'source.mid')
+            _, duration = read_midi(source.work / 'source.mid', length=86400)
+            tracks = [(i, name, count) for i, name, count in importer.tracks() if importer.pitches({i})]
+            return tracks, duration
+        def ready(value):
+            tracks, duration = value
+            choices = ['全部非打击乐音轨'] + [f'{i + 1}. {name}（{count} 个音符）' for i, name, count in tracks]
+            selected = [i for i, _, _ in tracks]
+            if len(tracks) > 1:
+                choice, ok = QInputDialog.getItem(self, '选择 MIDI 音轨', '选择主旋律音轨，或保留全部音轨：', choices, 0, False)
+                if not ok:
+                    self.set_busy(False)
+                    self.release_source()
+                    self.song = self.audio = None
+                    self.update_song_card()
+                    self.update_output()
+                    return
+                if choices.index(choice):
+                    selected = [tracks[choices.index(choice) - 1][0]]
+            self.source_dir = source.work
+            self.song = NeteaseSong(ident, path.stem, '', '', '', duration * 1000)
+            self.audio = NeteaseAudio(ident, '', duration * 1000)
+            self.wave_data = dict(kind='midi', source_name=path.name, peaks=[], origin=0,
+                                  duration=duration, full_duration=duration, trial=False, tracks=selected)
+            from ..score import atomic_json
+            atomic_json(source.work / 'waveform.json', self.wave_data)
+            self.waveform.set_data(self.wave_data)
+            self.set_selection(0, min(600, duration))
+            self.set_busy(False)
+            self.convert_midi_selection()
+            self.update_song_card()
+        def failed(message):
+            self.audio = None
+            self.set_busy(False)
+            self.failed(message)
+        self.job(inspect, ready, failed)
+
+    def convert_midi_selection(self):
+        if not self.source_dir or not (self.source_dir / 'source.mid').is_file():
+            self.failed('MIDI 源文件缺失，请重新选择本地文件')
+            return
+        try:
+            result, _ = read_midi(self.source_dir / 'source.mid', (self.wave_data or {}).get('tracks'),
+                                  self.start_time.value(), self.length.value())
+            result.metadata['source_name'] = self.wave_data.get('source_name', 'source.mid')
+        except (OSError, ValueError, EOFError) as exc:
+            self.failed(str(exc))
+            return
+        self.stop_preview()
+        self.draft_id = None
+        self.result = result
+        self.edited = self.saved = False
+        self.remap()
+        self.preview_mode.setCurrentIndex(2)
+        self.roll.fit()
+        self.status.setText('MIDI 已直接转换并保存草稿；原始文件已保留，无需扒谱组件。')
+
+    def draft_menu(self, position):
+        if self.busy:
+            return
+        item = self.history_list.itemAt(position)
+        if item is None:
+            return
+        self.history_list.setCurrentItem(item)
+        menu = QMenu(self)
+        menu.addAction('重命名', self.rename_draft)
+        menu.addAction('删除草稿', self.delete_draft)
+        menu.exec(self.history_list.viewport().mapToGlobal(position))
+
+    def rename_draft(self):
+        if self.busy or not self.history_list.currentItem():
+            return
+        ident = self.history_list.currentItem().data(Qt.ItemDataRole.UserRole)
+        self.flush_remap()
+        entry = next((d for d in self.drafts.entries() if d['id'] == ident), None)
+        if not entry:
+            return
+        title, ok = QInputDialog.getText(self, '重命名草稿', '草稿名称：',
+                                        text=entry.get('title', entry['song']['name']))
+        if not ok:
+            return
+        try:
+            self.drafts.rename(ident, title)
+            if ident == self.draft_id:
+                self.draft_title = title.strip()
+                if self.score:
+                    self.score.name = self.draft_title
+                self.saved = False
+                self.persist_draft()
+            self.refresh_history()
+        except (OSError, ValueError) as exc:
+            self.failed(str(exc))
 
     def fetch_song(self, cover=None):
         if self.busy:
@@ -472,21 +624,27 @@ class TranscriptionDialog(ServiceDialog):
             self.failed(message)
         def lookup():
             song = self.client.detail(value)
-            return song, self.client.playback_audio(song.id)
+            cached = DownloadCache(self.host.store.directory).get(song.id)
+            return song, cached or self.client.playback_audio(song.id)
         self.job(lookup, fetched, failed)
 
     def update_song_card(self):
         if not self.song:
             return
         self.fetch.setText('更换歌曲')
-        if self.audio:
+        kind = (self.wave_data or {}).get('kind', 'netease')
+        if kind in ('local_audio', 'midi'):
+            scope = '本地 MIDI · 直接转换音符' if kind == 'midi' else '本地音频'
+            duration = self.song.duration_ms / 1000
+        elif self.audio:
             scope = (f'仅试听 {clock_text(self.audio.trial_start)}—{clock_text(self.audio.trial_end)}'
                      if self.audio.is_trial else '完整音频')
             duration = max(self.song.duration_ms, self.audio.duration_ms) / 1000
         else:
             scope = '历史草稿 · 音频范围以保存时为准'
             duration = self.song.duration_ms / 1000
-        self.song_info.setText(f'{self.song.name} · {self.song.artists}\n{clock_text(duration)} · {scope}')
+        title = self.song.name + (f' · {self.song.artists}' if self.song.artists else '')
+        self.song_info.setText(f'{title}\n{clock_text(duration)} · {scope}')
         self.cover_label.clear()
         if self.cover:
             image = QPixmap()
@@ -494,33 +652,43 @@ class TranscriptionDialog(ServiceDialog):
                 self.cover_label.setPixmap(image.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio,
                                                         Qt.TransformationMode.SmoothTransformation))
 
-    def prepare_source(self):
+    def prepare_source(self, local_path=None):
         self.stop_preview()
         self.release_source()
-        job = AudioSource(self.host.store.directory, self.client, self.song, self.audio)
+        job = AudioSource(self.host.store.directory, self.client, self.song, self.audio, local_path=local_path)
         self.source_job = job
         self.set_busy(True)
-        self.status.setText('下载音频并生成真实波形…')
+        self.status.setText('读取本地音频…' if local_path else '检查下载缓存并准备音频…')
         self.progress.setRange(0, 0)
         def prepared(data):
             self.source_dir = job.work
             self.audio = job.audio
             self.wave_data = data
             self.waveform.set_data(data)
+            if local_path:
+                self.audio = NeteaseAudio(self.song.id, '', data['duration'] * 1000)
+                self.song = NeteaseSong(self.song.id, self.song.name, '', '', '', data['duration'] * 1000)
             low, high = data['origin'], data['origin'] + data['duration']
             start = max(low, min(self.start_time.value(), high - .1))
             self.set_selection(start, min(high, start + self.length.value()))
-            self.status.setText('拖动两端选择范围，单击波形定位试听。')
+            self.status.setText(('已使用下载缓存。' if job.cached else '') + '拖动两端选择范围，单击波形定位试听。')
             self.update_song_card()
             self.persist_draft()
         def finished(_):
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
             self.set_busy(False)
-        self.job(job.prepare, prepared, self.failed, finished)
+        def failed(message):
+            if local_path:
+                self.audio = None
+            self.failed(message)
+        self.job(job.prepare, prepared, failed, finished)
 
     def recover_audio(self):
         if self.busy or not self.song:
+            return
+        if self.result and self.result.metadata.get('source') in ('local_audio', 'midi'):
+            self.failed('本地源文件缺失，请通过选择歌曲 → 本地上传重新选择文件。')
             return
         self.set_busy(True)
         def loaded(audio):
@@ -534,7 +702,8 @@ class TranscriptionDialog(ServiceDialog):
                     return
             self.audio = audio
             self.prepare_source()
-        self.job(lambda: self.client.playback_audio(self.song.id), loaded,
+        self.job(lambda: DownloadCache(self.host.store.directory).get(self.song.id) or
+                 self.client.playback_audio(self.song.id), loaded,
                  lambda message: (self.set_busy(False), self.failed(message)))
 
     def release_source(self):
@@ -615,6 +784,9 @@ class TranscriptionDialog(ServiceDialog):
         self.flush_remap()
         if not self.persist_draft():
             return
+        if isinstance(self.result, MidiResult):
+            self.convert_midi_selection()
+            return
         try:
             engine = find_engine(self.host.store.directory)
             if not engine:
@@ -622,7 +794,9 @@ class TranscriptionDialog(ServiceDialog):
             start, length = self.start_time.value(), self.length.value()
             source = self.source_dir / 'source.audio' if self.source_dir else None
             task = TranscriptionTask(self.host.store.directory, self.client, self.song,
-                                     self.audio, engine, start, length, source=source)
+                                     self.audio, engine, start, length, source=source,
+                                     source_kind=(self.wave_data or {}).get("kind", "netease"),
+                                     source_name=(self.wave_data or {}).get("source_name", ""))
         except ValueError as exc:
             self.failed(str(exc))
             return
@@ -643,6 +817,7 @@ class TranscriptionDialog(ServiceDialog):
         self.media_dir = None
         self.cover = None
         self.draft_id = None
+        self.draft_title = None
         self.saved = self.edited = False
         self.statistics.setText('')
         self.seek.setValue(0)
@@ -674,7 +849,7 @@ class TranscriptionDialog(ServiceDialog):
                     break
                 stage = event['stage']
                 if stage == 'ready':
-                    self.result, self.cover = event['result'], event['cover']
+                    self.result, self.cover = event['result'], event.get('cover') or self.cover
                     self.draft_id = None
                     self.edited = self.saved = False
                     self.media_dir = self.task.work
@@ -749,9 +924,11 @@ class TranscriptionDialog(ServiceDialog):
                 self.bpm.setToolTip("自动估计值，可关闭自动后校正；不代表第一拍位置。"
                                     if self.result.metadata.get("bpm_estimated") else
                                     "BPM 未可靠估计，暂用 120；可关闭自动后手动设置。")
+            if isinstance(self.result, MidiResult):
+                self.bpm.setToolTip("读取 MIDI 选段起点的速度；变速信息已换算为音符的真实时间。")
             notes = self.result.notes(self.threshold.value(), self.minimum.value())
             metadata = dict(self.result.metadata, threshold=self.threshold.value(), minimum_ms=self.minimum.value())
-            self.score, stats = to_score(notes, self.song.name, self.bpm.value(),
+            self.score, stats = to_score(notes, self.draft_title or self.song.name, self.bpm.value(),
                                         None if self.auto_shift.isChecked() else self.shift.value(),
                                         self.grid.currentData(), metadata, self.song.artists,
                                         grid_offset_ms=self.grid_offset.value())
@@ -796,12 +973,12 @@ class TranscriptionDialog(ServiceDialog):
         try:
             self.draft_id = self.drafts.save(self.draft_id, self.song, self.result, self.score, self.parameters(),
                                             edited=self.edited, saved=self.saved, media=self.media_dir,
-                                            source=self.source_dir)
+                                            source=self.source_dir, title=self.draft_title)
             self.draft_status.setText('草稿已自动保存' + (' · 已保存到曲库' if self.saved else ''))
             directory = self.drafts.path(self.draft_id)
             if (directory / 'original.wav').exists() or (directory / 'vocals.wav').exists():
                 self.media_dir = directory
-            if (directory / 'source.audio').exists():
+            if (directory / 'source.audio').exists() or (directory / 'source.mid').exists():
                 self.source_dir = directory
             self.refresh_history()
             self.drafts.prune_audio(protected=(self.draft_id,))
@@ -817,14 +994,15 @@ class TranscriptionDialog(ServiceDialog):
         self.history_list.clear()
         for entry in self.drafts.entries():
             song = entry['song']
-            if query and query not in (song['name'] + song['artists']).casefold():
+            title = entry.get('title', song['name'])
+            if query and query not in (title + song['name'] + song['artists']).casefold():
                 continue
             start = entry['metadata'].get('source_start', 0)
             end = start + entry['metadata'].get('requested_length', 0)
             state = '已保存到曲库' if entry['saved'] else '已编辑' if entry['edited'] else '已生成'
             from datetime import datetime
             date = datetime.fromtimestamp(entry['updated']).strftime('%m-%d %H:%M')
-            item = QListWidgetItem(f"{song['name']}\n{clock_text(start)}—{clock_text(end)}\n{state} · {date}")
+            item = QListWidgetItem(f"{title}\n{clock_text(start)}—{clock_text(end)}\n{state} · {date}")
             item.setData(Qt.ItemDataRole.UserRole, entry['id'])
             item.setToolTip(song['name'] + ' · ' + song['artists'])
             score_data = entry.get('score')
@@ -858,10 +1036,17 @@ class TranscriptionDialog(ServiceDialog):
         self.restoring = True
         self.draft_id, self.song, self.result, self.score = ident, song, result, score
         self.edited, self.saved = data['edited'], data['saved']
+        self.draft_title = data.get('title')
         directory = self.drafts.path(ident)
         self.media_dir = self.source_dir = directory
         self.wave_data = load_waveform(directory)
-        self.audio = None  # Refresh access before any new inference or audio restoration.
+        self.audio = None
+        if self.wave_data and ((directory / 'source.audio').exists() or (directory / 'source.mid').exists()):
+            origin = self.wave_data['origin']
+            trial = self.wave_data.get('trial', False)
+            self.audio = NeteaseAudio(song.id, '', self.wave_data['full_duration'] * 1000,
+                                     origin if trial else None,
+                                     origin + self.wave_data['duration'] if trial else None)
         if self.wave_data:
             self.waveform.set_data(self.wave_data)
         else:
@@ -889,9 +1074,8 @@ class TranscriptionDialog(ServiceDialog):
         self.roll.fit()
         self.set_busy(False)
         self.draft_status.setText('草稿已恢复' + (' · 已保存到曲库' if self.saved else ''))
-        self.status.setText('历史草稿已恢复；继续识别前请点击恢复音频以刷新可用范围。')
-        # Even with a cached source, an expired playback URL must be refreshed for a new task.
-        self.restore_audio.setVisible(True)
+        self.status.setText('草稿与源文件已恢复，可直接编辑或重新处理。' if self.audio else
+                            '草稿已恢复；此旧草稿未保留源文件，请恢复音频。')
         self.refresh_history()
 
     def delete_draft(self):
@@ -916,24 +1100,24 @@ class TranscriptionDialog(ServiceDialog):
         except OSError as exc:
             self.failed(str(exc))
 
-    def clear_audio_cache(self):
+    def clear_audio_cache(self, confirm=True):
         if self.busy:
             return
-        if QMessageBox.question(self, '清理音频缓存', '清理音频缓存？草稿、识别数据和人工修改均会保留。') != QMessageBox.StandardButton.Yes:
+        if confirm and QMessageBox.question(self, '清理音频缓存', '清理下载和试听缓存？草稿源文件和曲谱均会保留。') != QMessageBox.StandardButton.Yes:
             return
         self.flush_remap()
         if not self.persist_draft():
             return
         self.stop_preview()
         self.media.setSource(QUrl())
-        self.release_source()
         if self.task:
             self.task.close()
             self.task = None
         try:
+            DownloadCache(self.host.store.directory).prune(clear=True)
             self.drafts.prune_audio(budget=0)
             self.update_output()
-            self.status.setText('音频缓存已清理，曲谱仍可试听与编辑。')
+            self.status.setText('下载和试听缓存已清理，草稿源文件与曲谱仍保留。')
         except OSError as exc:
             self.failed(str(exc))
 
@@ -1064,6 +1248,9 @@ class TranscriptionDialog(ServiceDialog):
             self.media.setPosition(self.pending_seek)
 
     def wave_seek(self, absolute):
+        if isinstance(self.result, MidiResult):
+            self.roll_seek((absolute - self.result_start()) * 1000)
+            return
         self.stop_preview()
         self.preview_mode.blockSignals(True)
         self.preview_mode.setCurrentIndex(0)
@@ -1091,6 +1278,7 @@ class TranscriptionDialog(ServiceDialog):
         if editor.saved:
             self.score = copy.deepcopy(editor.score)
             self.score.path = None
+            self.draft_title = self.score.name
             self.edited, self.saved = True, False
             self.bpm.blockSignals(True)
             self.bpm.setValue(self.score.bpm)

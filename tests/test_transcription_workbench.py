@@ -44,7 +44,8 @@ def test_draft_roundtrip_and_audio_pruning_preserves_edits(tmp_path):
     assert loaded_score.notes[0].key == 3
     assert loaded_result.metadata['source_start'] == 60
     assert (drafts.path(ident) / 'pitch.npz').exists()
-    assert not (drafts.path(ident) / 'source.audio').exists()
+    assert (drafts.path(ident) / 'source.audio').exists()
+    assert not (drafts.path(ident) / 'original.wav').exists()
     assert (source / 'source.audio').exists()  # hard-linked cache eviction doesn't touch its origin
     with pytest.raises(ValueError):
         drafts.path('../outside')
@@ -54,13 +55,13 @@ def test_draft_lru_and_corrupt_entry(tmp_path):
     drafts = DraftStore(tmp_path)
     source = tmp_path / 'source'
     source.mkdir()
-    (source / 'source.audio').write_bytes(b'0123456789')
-    ids = [drafts.save(None, NeteaseSong('1', str(i), '', '', ''), result(), Score(), {}, source=source)
+    (source / 'original.wav').write_bytes(b'0123456789')
+    ids = [drafts.save(None, NeteaseSong('1', str(i), '', '', ''), result(), Score(), {}, media=source)
            for i in range(2)]
     drafts.load(ids[0])
     drafts.prune_audio(10)
-    assert (drafts.path(ids[0]) / 'source.audio').exists()
-    assert not (drafts.path(ids[1]) / 'source.audio').exists()
+    assert (drafts.path(ids[0]) / 'original.wav').exists()
+    assert not (drafts.path(ids[1]) / 'original.wav').exists()
     (drafts.path(ids[1]) / 'draft.json').write_text('broken')
     assert len(drafts.entries()) == 1
 
@@ -245,7 +246,7 @@ def test_clear_audio_keeps_edit_and_raw_data(qtbot, tmp_path, monkeypatch):
     dialog.edited = True
     monkeypatch.setattr(QMessageBox, 'question', lambda *_: QMessageBox.StandardButton.Yes)
     dialog.clear_audio_cache()
-    assert not (directory / 'source.audio').exists()
+    assert (directory / 'source.audio').exists()
     data, _, _, score = dialog.drafts.load(ident)
     assert data['edited'] and score.notes[0].key == 8
     assert (directory / 'pitch.npz').exists()
@@ -275,7 +276,7 @@ def test_task_reuses_prepared_source_without_downloading(tmp_path, monkeypatch):
     assert source.exists() and not task.work.exists()
 
 
-def test_cached_draft_can_refresh_access_after_remapping(qtbot, tmp_path, monkeypatch):
+def test_cached_draft_uses_retained_source_after_remapping(qtbot, tmp_path, monkeypatch):
     window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
     populate(dialog)
     directory = dialog.drafts.path(dialog.draft_id)
@@ -287,5 +288,5 @@ def test_cached_draft_can_refresh_access_after_remapping(qtbot, tmp_path, monkey
     restored.open_draft(restored.history_list.item(0))
     restored.minimum.setValue(100)
     restored.flush_remap()
-    assert restored.restore_audio.isVisible() and not restored.begin.isEnabled()
+    assert not restored.restore_audio.isVisible() and restored.begin.isEnabled()
     window.close()

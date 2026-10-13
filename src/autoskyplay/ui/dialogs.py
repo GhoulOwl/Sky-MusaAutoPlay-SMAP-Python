@@ -94,6 +94,9 @@ class SettingsDialog(QDialog):
         row.addWidget(button("keys.reset", self.reset_keys))
         row.addStretch()
         root.addLayout(row)
+        self.clear_audio_button = QPushButton("清理扒谱音频缓存（下载文件保留 7 天）")
+        self.clear_audio_button.clicked.connect(self.clear_audio_cache)
+        root.addWidget(self.clear_audio_button)
         clear_engine = QPushButton("清理本地扒谱组件与模型")
         clear_engine.clicked.connect(self.clear_transcription)
         root.addWidget(clear_engine)
@@ -104,6 +107,28 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
         self.reset_pitches = False
+
+    def clear_audio_cache(self):
+        from ..transcription.cache import DownloadCache
+        from ..transcription.drafts import DraftStore
+
+        dialog = self.host.transcription_dialog
+        if dialog and dialog.active and dialog.busy:
+            QMessageBox.warning(self, '清理音频缓存', '请等待当前音频准备或扒谱任务结束')
+            return
+        if QMessageBox.question(self, '清理音频缓存',
+                                '清理下载缓存和临时试听音频？草稿源文件、曲谱和人工编辑均会保留。',
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if dialog and dialog.active:
+                dialog.clear_audio_cache(confirm=False)
+            else:
+                DownloadCache(self.host.store.directory).prune(clear=True)
+                DraftStore(self.host.store.directory).prune_audio(budget=0)
+        except OSError as exc:
+            QMessageBox.warning(self, '清理音频缓存', str(exc))
 
     def clear_transcription(self):
         from ..transcription.engine import clear_components

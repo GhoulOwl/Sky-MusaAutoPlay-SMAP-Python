@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from ..score import atomic_json
+from .cache import DownloadCache
 from .melody import PitchResult
 
 STAGES = {"decode", "separate", "pitch", "convert", "notice", "done", "error"}
@@ -37,13 +38,15 @@ def stop_process(process):
 
 
 class TranscriptionTask:
-    def __init__(self, directory, client, song, audio, engine, start, length, source=None):
+    def __init__(self, directory, client, song, audio, engine, start, length, source=None, source_kind="netease", source_name=""):
         origin = audio.trial_start or 0
         available = audio.available_seconds
         if (not 0 <= start - origin or not 0 < length <= 600
                 or (available and start - origin + length > available + .1)):
             raise ValueError("所选范围超出可用音频，或超过 10 分钟")
         self.client, self.song, self.audio, self.engine = client, song, audio, engine
+        self.cache = DownloadCache(directory)
+        self.source_kind, self.source_name = source_kind, source_name
         self.source = Path(source) if source else None
         self.start_seconds, self.length_seconds = start, length
         self.cancelled = threading.Event()
@@ -85,11 +88,16 @@ class TranscriptionTask:
     def _run(self):
         try:
             self.check_cancelled()
-            self.emit("download")
+            self.emit("decode" if self.source else "download")
+            if self.source_kind != "netease" and not (self.source and self.source.is_file()):
+                raise ValueError("草稿源文件缺失，请重新选择本地文件")
             # Refresh an expiring URL once. Never change full/trial scope silently.
             if self.source and self.source.is_file():
                 shutil.copyfile(self.source, self.work / "source.audio")
-            for attempt in range(0 if (self.work / "source.audio").exists() else 2):
+            elif self.source_kind == "netease":
+                self.cache.get(self.song.id, self.work / "source.audio", self.audio)
+            downloaded = not (self.work / "source.audio").exists()
+            for attempt in range(0 if not downloaded else 2):
                 try:
                     self.client.download_audio(self.audio, self.work / "source.audio",
                                                self.cancelled.is_set, lambda p: self.emit("download", p))
@@ -105,7 +113,7 @@ class TranscriptionTask:
             self.check_cancelled()
             cover = None
             try:
-                cover = self.client.cover(self.song)
+                cover = self.client.cover(self.song) if self.source_kind == "netease" and self.source is None else None
             except ValueError:
                 self.emit("notice", message="封面获取失败，生成曲谱后仍可手动设置封面")
             self.check_cancelled()
@@ -114,9 +122,14 @@ class TranscriptionTask:
             })
             metadata = self._run_engine()
             self.check_cancelled()
-            metadata.update(source="netease", song_id=self.song.id, source_start=self.start_seconds,
-                            requested_length=self.length_seconds, is_trial=self.audio.is_trial)
+            metadata.update(source=self.source_kind, source_name=self.source_name,
+                            song_id=self.song.id, source_start=self.start_seconds,
+                            requested_length=self.length_seconds, is_trial=self.audio.is_trial,
+                            source_origin=self.audio.trial_start or 0,
+                            source_duration=self.audio.available_seconds)
             self.result = PitchResult.load(self.work / "pitch.npz", metadata)
+            if downloaded and self.source_kind == "netease":
+                self.cache.put(self.audio, self.work / "source.audio")
             self.emit("ready", 100, result=self.result, cover=cover)
         except Exception as exc:
             self.emit("cancelled" if self.cancelled.is_set() else "error",
