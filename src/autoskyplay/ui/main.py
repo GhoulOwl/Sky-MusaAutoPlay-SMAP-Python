@@ -50,6 +50,7 @@ from ..audio import ASSETS, DEFAULT_PITCH, INSTRUMENTS, Mixer, QtAudioOutput
 from ..auth import clear_auth, load_auth, save_auth
 from ..cloud import CloudClient, check_release
 from ..input import GlobalKeyboard, WindowsOutput
+from ..netease import NeteaseClient, NeteaseService
 from ..playback import Player, State
 from ..score import Score, load_score
 from ..storage import scan_library
@@ -57,8 +58,19 @@ from ..updater import download_asset, installer_asset
 from . import style
 from .dialogs import LoginDialog, MidiDialog, SettingsDialog
 from .editor import EditorDialog
+from .netease import NeteaseLoginDialog
 from .practice import PracticeDialog
-from .widgets import Job, Piano, VolumeButton, button, cover_icon, label, playback_icon, time_text
+from .widgets import (
+    AccountButton,
+    Job,
+    Piano,
+    VolumeButton,
+    button,
+    cover_icon,
+    label,
+    playback_icon,
+    time_text,
+)
 
 log = logging.getLogger(__name__)
 PLAYBACK_ORDERS = (
@@ -80,7 +92,9 @@ class Bridge(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, store, no_audio=False, no_global=False):
+    netease_auth_changed = Signal()
+
+    def __init__(self, store, no_audio=False, no_global=False, restore_netease=True):
         super().__init__()
         self.store, self.no_audio, self.no_global = store, no_audio, no_global
         self.bridge = Bridge(self)
@@ -98,6 +112,10 @@ class MainWindow(QMainWindow):
         self.closed = False
         self.practice_dialog = None
         self.cloud_client = CloudClient(store.data["cloud_url"])
+        self.netease_service = NeteaseService(store.data["netease_port"], store.directory / "netease")
+        self.netease_client = NeteaseClient(self.netease_service, credential_directory=store.directory)
+        self.netease_auth_restoring = False
+        self.netease_restore_retry = False
         self.cloud_page = 0
         self.cloud_pages = 0
         self.cloud_items = []
@@ -139,6 +157,8 @@ class MainWindow(QMainWindow):
             )
         if self.store.data["update_repo"] and not no_global:
             QTimer.singleShot(3000, self.check_updates)
+        if restore_netease and self.store.data["remember_netease_login"]:
+            self.restore_netease_login()
 
     def panel(self):
         panel = QFrame()
@@ -161,9 +181,18 @@ class MainWindow(QMainWindow):
         brand = label("AutoSkyPlay", "brand")
         left.addWidget(brand)
         left.addWidget(label("SKY · MUSIC STUDIO", "muted"))
-        self.account = button("login", self.login)
+        self.account = AccountButton(style.tr("login"))
+        self.account.setProperty("tr_key", "login")
+        self.account.clicked.connect(self.login)
+        self.account.doubleClicked.connect(self.logout_cloud)
+        self.account.setToolTip("双击确认退出缪斯树屋账号" if self.cloud_client.user else "登录缪斯树屋")
         left.addSpacing(12)
         left.addWidget(self.account)
+        self.netease_account = AccountButton("网易云登录")
+        self.netease_account.clicked.connect(self.netease_login)
+        self.netease_account.doubleClicked.connect(self.logout_netease)
+        left.addWidget(self.netease_account)
+        self.update_netease_account()
         left.addSpacing(16)
         self.local_nav = button("library", lambda: self.show_page(0))
         self.cloud_nav = button("cloud", lambda: self.show_page(1))
@@ -513,7 +542,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.more_button)
         self.pages.addWidget(panel)
 
-    def run_job(self, callback, on_result=None, on_error=None, on_finished=None):
+    def run_job(self, callback, on_result=None, on_error=None, on_finished=None, priority=0):
         job = Job(callback)
         self.jobs.add(job)
         if on_result:
@@ -536,7 +565,7 @@ class MainWindow(QMainWindow):
                 on_finished()
 
         job.signals.finished.connect(finished)
-        self.pool.start(job)
+        self.pool.start(job, priority)
 
     def restore(self):
         result = scan_library(self.store.songs_dir)
@@ -1278,14 +1307,6 @@ class MainWindow(QMainWindow):
 
     def login(self):
         if self.cloud_client.user:
-            client = self.cloud_client
-            if self.store.data.get("remember_login"):
-                self.run_job(lambda: clear_auth(client.base_url))
-            self.store.data["remember_login"] = False
-            self.cloud_client.user.clear()
-            self.account.setText(style.tr("login"))
-            self.account.setIcon(QIcon())
-            self.defer_save()
             return
         dialog = LoginDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1312,12 +1333,106 @@ class MainWindow(QMainWindow):
         )
         dialog.password.clear()
 
+    def confirm_logout(self, service):
+        message = f"确定要退出{service}账号吗？"
+        if service == "网易云":
+            message += "\n退出后会清除保存的登录会话。"
+        warning = QMessageBox(
+            QMessageBox.Icon.Warning, "退出账号", message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, self,
+        )
+        warning.button(QMessageBox.StandardButton.Yes).setText(style.tr("logout"))
+        warning.button(QMessageBox.StandardButton.Cancel).setText(style.tr("cancel"))
+        warning.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        warning.setEscapeButton(QMessageBox.StandardButton.Cancel)
+        return warning.exec() == QMessageBox.StandardButton.Yes
+
+    def logout_cloud(self):
+        if not self.cloud_client.user or not self.confirm_logout("缪斯树屋"):
+            return
+        client = self.cloud_client
+        if self.store.data.get("remember_login"):
+            self.run_job(lambda: clear_auth(client.base_url))
+        self.store.data["remember_login"] = False
+        client.user.clear()
+        self.account.setText(style.tr("login"))
+        self.account.setIcon(QIcon())
+        self.account.setToolTip("登录缪斯树屋")
+        self.defer_save()
+
+    def update_netease_account(self):
+        user = self.netease_client.user
+        text = "网易云 · " + str(user.get("nickname") or "已登录") if user else "网易云登录"
+        hint = "双击确认退出网易云账号" if user else "扫码登录网易云音乐"
+        if self.netease_auth_restoring:
+            text = "网易云 · 正在恢复登录…"
+            hint = "正在验证保存的网易云会话"
+        elif self.netease_restore_retry:
+            text = "重试恢复网易云登录"
+            hint = "点击重试恢复已保存的网易云会话"
+        self.netease_account.setText(text)
+        self.netease_account.setEnabled(not self.netease_auth_restoring)
+        self.netease_account.setToolTip(hint)
+        self.netease_auth_changed.emit()
+
+    def netease_logged_in(self):
+        self.netease_restore_retry = False
+        self.store.data["remember_netease_login"] = self.netease_client.remembered
+        self.save_state()
+        self.update_netease_account()
+        if self.netease_client.auth_warning:
+            self.status.setText(self.netease_client.auth_warning)
+
+    def restore_netease_login(self):
+        if self.netease_auth_restoring or self.closed:
+            return
+        self.netease_auth_restoring = True
+        self.update_netease_account()
+
+        def restored(user):
+            self.netease_auth_restoring = False
+            self.netease_logged_in()
+
+        def failed(message):
+            self.netease_auth_restoring = False
+            self.netease_restore_retry = self.netease_client.remembered
+            self.store.data["remember_netease_login"] = self.netease_client.remembered
+            self.save_state()
+            self.update_netease_account()
+            self.status.setText("网易云登录恢复失败：" + message)
+
+        self.run_job(lambda: self.netease_client.restore_login(cancelled=lambda: self.closed), restored, failed)
+
+    def netease_login(self):
+        if self.netease_auth_restoring:
+            return
+        if self.netease_client.user:
+            return
+        if self.netease_restore_retry:
+            self.restore_netease_login()
+            return
+        NeteaseLoginDialog(self).exec()
+
+    def logout_netease(self):
+        if self.netease_auth_restoring or not self.netease_client.user:
+            return
+        if not self.confirm_logout("网易云"):
+            return
+        # A failed credential deletion must never re-enable auto-login on restart.
+        self.store.data["remember_netease_login"] = False
+        self.save_state()
+        self.netease_account.setEnabled(False)
+        self.run_job(
+            self.netease_client.logout,
+            on_finished=lambda: (self.update_netease_account(), self.netease_account.setEnabled(True)),
+        )
+
     def restore_auth(self, user):
         if not user:
             return
         self.cloud_client.user = user
         self.account.setText(user.get("username", style.tr("logout")))
-        self.account.setToolTip(style.tr("logout"))
+        self.account.setToolTip("双击确认退出缪斯树屋账号")
         client = self.cloud_client
         self.run_job(client.avatar, self.avatar_loaded, on_error=lambda message: None)
 
@@ -1490,6 +1605,7 @@ class MainWindow(QMainWindow):
         self.player.stop()
         self.release_manual()
         self.global_keyboard.stop()
+        self.netease_service.close()
         self.save_state()
         self.mixer.silence()
         if self.audio_output:

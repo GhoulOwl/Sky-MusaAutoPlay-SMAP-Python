@@ -63,7 +63,8 @@ def main(argv=None):
     for path in args.imports:
         store.import_score(path)
     window = MainWindow(
-        store, no_audio=args.no_audio or args.smoke_test, no_global=args.no_global_hotkeys or args.smoke_test
+        store, no_audio=args.no_audio or args.smoke_test, no_global=args.no_global_hotkeys or args.smoke_test,
+        restore_netease=not args.smoke_test,
     )
     window.show()
     if args.screenshot:
@@ -80,6 +81,8 @@ def main(argv=None):
     window.player.stop()
     window.pool.waitForDone()
     window.cloud_client.close()
+    window.netease_client.close()
+    window.netease_service.close()
     handler.close()
     logging.getLogger().removeHandler(handler)
     return code

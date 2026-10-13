@@ -9,3 +9,5 @@ dist/
 .DS_Store
 *.log
 artifacts/
+src/autoskyplay/assets/netease/node_modules/
+src/autoskyplay/assets/netease/runtime/

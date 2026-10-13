@@ -40,6 +40,69 @@ def label(text: str, kind: str = ""):
     return widget
 
 
+class AccountButton(QPushButton):
+    doubleClicked = Signal()
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self._feedback = 0.0
+        self._ignore_release = False
+        self.animation = QPropertyAnimation(self, b"feedback", self)
+        self.animation.setDuration(200)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.pressed.connect(self.flash)
+
+    def _get_feedback(self):
+        return self._feedback
+
+    def _set_feedback(self, value):
+        self._feedback = value
+        self.update()
+
+    feedback = Property(float, _get_feedback, _set_feedback)
+
+    def flash(self):
+        self.animation.stop()
+        self.animation.setStartValue(1.0)
+        self.animation.setEndValue(0.0)
+        self.animation.start()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._feedback > 0:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            color = QColor(style.colors["accent"])
+            color.setAlphaF(0.18 * self._feedback)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
+
+    def mousePressEvent(self, event):
+        self._ignore_release = False
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
+            # Confirmation can change login state before the second release.
+            # Suppress that release so it cannot trigger the sign-in action.
+            self._ignore_release = True
+            self.setDown(False)
+            self.flash()
+            event.accept()
+            self.doubleClicked.emit()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._ignore_release and event.button() == Qt.MouseButton.LeftButton:
+            self._ignore_release = False
+            self.setDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 def time_text(ms: float) -> str:
     seconds = int(max(0, ms) / 1000)
     return f"{seconds // 60}:{seconds % 60:02}"

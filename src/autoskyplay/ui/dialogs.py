@@ -70,6 +70,10 @@ class SettingsDialog(QDialog):
         form.addRow(style.tr("speed"), self.random_speed)
         self.cloud = QLineEdit(data["cloud_url"])
         form.addRow("云端地址", self.cloud)
+        self.netease_port = QSpinBox()
+        self.netease_port.setRange(1, 65535)
+        self.netease_port.setValue(data["netease_port"])
+        form.addRow("网易云服务端口", self.netease_port)
         self.repo = QLineEdit(data["update_repo"])
         self.repo.setPlaceholderText("owner/python-rewrite-repo")
         form.addRow("Python 版更新仓库", self.repo)
@@ -110,6 +114,7 @@ class SettingsDialog(QDialog):
             validate_keys(keys)
             if not self.cloud.text().startswith(("https://", "http://")):
                 raise ValueError("云端地址需要以 https:// 或 http:// 开头")
+            self.host.netease_service.configure(self.netease_port.value())
         except ValueError as exc:
             QMessageBox.warning(self, style.tr("settings"), str(exc))
             return
@@ -124,6 +129,7 @@ class SettingsDialog(QDialog):
             update_repo=self.repo.text().strip(),
             global_hotkeys=self.global_keys.isChecked(),
             random_speed=self.random_speed.isChecked(),
+            netease_port=self.netease_port.value(),
         )
         if self.reset_pitches:
             self.host.store.data["pitches"] = {}

@@ -5,7 +5,7 @@ import copy
 import math
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 from ..playback import Player, State
 from ..score import Note, Score, unique_path
 from . import style
+from .netease import NeteaseSongDialog
 from .widgets import button, label
 
 
@@ -209,6 +211,15 @@ class EditorDialog(QDialog):
         form.addRow("BPM", self.bpm)
         metadata.addLayout(form)
         root.addLayout(metadata)
+        netease = QHBoxLayout()
+        self.netease_button = QPushButton("从网易云获取")
+        self.netease_button.clicked.connect(self.fetch_netease)
+        netease.addWidget(self.netease_button)
+        self.netease_status = label("曲名 → 歌曲名 · 歌手 → 作者 · 专辑封面 → 封面", "muted")
+        self.netease_status.setTextFormat(Qt.TextFormat.PlainText)
+        netease.addWidget(self.netease_status)
+        netease.addStretch()
+        root.addLayout(netease)
         controls = QHBoxLayout()
         self.grid = QComboBox()
         for text, value in [
@@ -332,20 +343,48 @@ class EditorDialog(QDialog):
         )
         if not path:
             return
-        from PySide6.QtGui import QImage
-
         image = QImage(path)
         if image.isNull():
             self.host.show_error("图片读取失败")
             return
+        try:
+            self.embed_cover(image)
+        except ValueError as exc:
+            self.host.show_error(str(exc))
+            return
+        self.mark_dirty()
+
+    def embed_cover(self, image):
         image = image.scaled(
             512, 512, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
         )
         data = QByteArray()
         buffer = QBuffer(data)
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-        image.save(buffer, "JPEG", 80)
+        if not image.save(buffer, "JPEG", 80):
+            raise ValueError("封面压缩失败，请使用其他图片")
         self.score.root["cover"] = base64.b64encode(bytes(data)).decode("ascii")
+        buffer.close()
+
+    def fetch_netease(self):
+        dialog = NeteaseSongDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selection:
+            self.apply_netease(*dialog.selection)
+
+    def apply_netease(self, song, cover):
+        if cover:
+            image = QImage.fromData(cover)
+            if image.isNull():
+                self.host.show_error("网易云专辑封面图片无效，请重试或手动设置封面")
+                return
+            try:
+                self.embed_cover(image)
+            except ValueError as exc:
+                self.host.show_error(str(exc))
+                return
+        self.name.setText(song.name)
+        self.author.setText(song.artists)
+        self.netease_status.setText(f"已填写：{song.name} · {song.album} · ID {song.id}")
         self.mark_dirty()
 
     def save(self, save_as=False):

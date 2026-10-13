@@ -14,10 +14,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: astral-sh/setup-uv@v6
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libpulse0 fonts-noto-cjk
       - run: uv sync --frozen --extra dev
+      - run: uv run python scripts/prepare_netease.py
       - run: uv run ruff check src tests scripts
       - run: uv run pytest -q
       - run: uv run autoskyplay --smoke-test --data-dir smoke-data --screenshot artifacts/main.png

@@ -2,7 +2,7 @@
 
 参考源码：[SMAP](https://github.com/lingyunalingyun/Sky-MusaAutoPlay-SMAP-)，
 版本固定为 `0416e82fa95c472de2de7eaf96ddd05445db73fc`。
-验证日期：2026-10-12。
+验证日期：2026-10-13。
 
 ## 实现范围
 
@@ -26,6 +26,7 @@
 | 洞穴音效 | Python 反馈延迟混响 | DSP 测试；听感与原 Freeverb 不同 |
 | 云端曲库 | 搜索、排序、难度、分页、滚动加载、下载 | 真实服务搜索与下载成功；协议模拟测试 |
 | 云端登录 / 上传 | HTTPS、系统凭据库存令牌、头像、封面、曲谱 / 日志上传 | 协议代码与凭据测试；未用真实账号上传 |
+| 网易云内置服务 / 登录 / 歌曲信息 | 随包 Node 与生产依赖、端口配置、扫码登录、凭据库保存与重启恢复、精确链接与分页搜索、封面嵌入 | 服务进程、会话保存与恢复 / UI 测试；真实详情、搜索与二维码成功；手机确认待验收 |
 | 封面 | 本地内嵌封面读写；下载封面并保存 | 实现；Qt 图像展示 |
 | 三种主题 / 四种语言 | 深色、浅色、落日糖纸；简 / 繁 / 英 / 日及音色名 | 窗口截图；部分诊断文案保留中文 |
 | 更新 / 安装 | 独立 Python 发布仓库、下载进度、可用时 SHA-256 验证、Windows 安装器重启 | 下载逻辑与本地 macOS 打包；Windows 安装 / 更新待实测 |
@@ -56,6 +57,7 @@ macOS/Linux 支持界面、制谱、试听和本地练习。全局按键注入�
 
 ```sh
 uv sync --frozen --extra dev
+uv run python scripts/prepare_netease.py
 uv run ruff check src tests scripts
 QT_QPA_PLATFORM=offscreen uv run pytest -q
 uv run autoskyplay --smoke-test --data-dir /tmp/asp-check --screenshot artifacts/main.png

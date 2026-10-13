@@ -45,6 +45,8 @@ class Store:
             "random_speed": False,
             "cloud_url": "https://musetreehouse.com",
             "update_repo": "",
+            "netease_port": 3000,
+            "remember_netease_login": False,
         }
         defaults = copy.deepcopy(self.data)
         if self.path.exists():
@@ -63,6 +65,9 @@ class Store:
 
     def validate(self):
         from .audio import INSTRUMENTS
+        from .netease import validate_port
+
+        validate_port(self.data["netease_port"])
 
         for field, allowed in {
             "theme": ("dark", "light", "sunset"),
@@ -83,7 +88,7 @@ class Store:
             value = self.data[field]
             if type(value) not in (int, float) or not math.isfinite(value) or not lower <= value <= upper:
                 raise ValueError(f"无效配置字段: {field}")
-        for field in ("cave", "global_hotkeys", "random_speed"):
+        for field in ("cave", "global_hotkeys", "random_speed", "remember_netease_login"):
             if not isinstance(self.data[field], bool):
                 raise ValueError(f"无效配置字段: {field}")
         for field in ("queue",):

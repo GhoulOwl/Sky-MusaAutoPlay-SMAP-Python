@@ -25,3 +25,16 @@ created for AutoSkyPlay.
 Python dependencies retain their own licenses. PySide6/Qt are used through their
 open-source distribution; their notices accompany PyInstaller bundles. Review
 asset rights and dependency license obligations before public distribution.
+
+The embedded NetEase metadata/login service uses
+[@neteasecloudmusicapienhanced/api](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)
+version 4.41.1 under the MIT license. Its production dependency versions and
+integrity hashes are recorded in `src/autoskyplay/assets/netease/package-lock.json`.
+The service adapter is application code; the upstream modules are installed
+unchanged. The package and dependency license files accompany the bundled
+`assets/netease/node_modules/` tree.
+
+Node.js 22.22.0 is redistributed with platform-specific application builds.
+Its MIT license and bundled third-party notices are included in
+`assets/netease/runtime/LICENSE`. The runtime is downloaded from nodejs.org and
+verified against the release's official SHA-256 checksum manifest.

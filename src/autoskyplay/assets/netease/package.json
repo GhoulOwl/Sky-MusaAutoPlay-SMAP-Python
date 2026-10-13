@@ -1,0 +1,9 @@
+{
+  "name": "autoskyplay-netease-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned embedded NeteaseCloudMusicApiEnhanced service",
+  "dependencies": {
+    "@neteasecloudmusicapienhanced/api": "4.41.1"
+  }
+}

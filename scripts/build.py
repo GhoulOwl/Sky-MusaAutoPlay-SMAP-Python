@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from prepare_netease import BUNDLE, prepare
+
 from autoskyplay import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +17,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--installer", action="store_true", help="Also run Inno Setup (Windows only)")
     args = parser.parse_args()
+    prepare()
     command = [
         sys.executable,
         "-m",
@@ -30,6 +33,8 @@ def main():
         str(ROOT / "src"),
         "--collect-data",
         "autoskyplay",
+        "--add-binary",
+        f"{BUNDLE / 'runtime' / ('node.exe' if sys.platform == 'win32' else 'node')}:autoskyplay/assets/netease/runtime",
         "--collect-submodules",
         "keyring.backends",
         "--exclude-module",
