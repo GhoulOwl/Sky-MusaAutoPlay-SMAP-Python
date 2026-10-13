@@ -1,0 +1,32 @@
+name: Build desktop app
+on: workflow_dispatch
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --extra dev
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            choco install innosetup -y --no-progress
+          }
+          uv run python scripts/build.py --installer
+      - if: runner.os == 'macOS'
+        run: uv run python scripts/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoSkyPlay-${{ runner.os }}
+          path: |
+            dist/AutoSkyPlay-Setup.exe
+            dist/AutoSkyPlay.dmg
+            dist/AutoSkyPlay/**

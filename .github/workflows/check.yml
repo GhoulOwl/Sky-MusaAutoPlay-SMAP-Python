@@ -1,0 +1,27 @@
+name: Python checks
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libpulse0 fonts-noto-cjk
+      - run: uv sync --frozen --extra dev
+      - run: uv run ruff check src tests scripts
+      - run: uv run pytest -q
+      - run: uv run autoskyplay --smoke-test --data-dir smoke-data --screenshot artifacts/main.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-${{ runner.os }}
+          path: artifacts/main.png

@@ -1,0 +1,142 @@
+[
+  {
+    "name": "星光练习 · 旋律与和弦",
+    "author": "AutoSkyPlay",
+    "transcribedBy": "AutoSkyPlay",
+    "bpm": 120,
+    "keyCount": 15,
+    "isEncrypted": false,
+    "songNotes": [
+      {
+        "key": "1Key0",
+        "time": 0,
+        "duration": 250
+      },
+      {
+        "key": "1Key2",
+        "time": 500,
+        "duration": 250
+      },
+      {
+        "key": "1Key4",
+        "time": 1000,
+        "duration": 250
+      },
+      {
+        "key": "1Key7",
+        "time": 1500,
+        "duration": 250
+      },
+      {
+        "key": "1Key4",
+        "time": 2000,
+        "duration": 250
+      },
+      {
+        "key": "1Key2",
+        "time": 2500,
+        "duration": 250
+      },
+      {
+        "key": "1Key0",
+        "time": 3000,
+        "duration": 250
+      },
+      {
+        "key": "1Key4",
+        "time": 3500,
+        "duration": 250
+      },
+      {
+        "key": "1Key7",
+        "time": 4000,
+        "duration": 250
+      },
+      {
+        "key": "1Key9",
+        "time": 4500,
+        "duration": 250
+      },
+      {
+        "key": "1Key7",
+        "time": 5000,
+        "duration": 250
+      },
+      {
+        "key": "1Key4",
+        "time": 5500,
+        "duration": 250
+      },
+      {
+        "key": "1Key2",
+        "time": 6000,
+        "duration": 250
+      },
+      {
+        "key": "1Key0",
+        "time": 6500,
+        "duration": 250
+      },
+      {
+        "key": "1Key0",
+        "time": 7500,
+        "duration": 300
+      },
+      {
+        "key": "1Key4",
+        "time": 7500,
+        "duration": 300
+      },
+      {
+        "key": "1Key7",
+        "time": 7500,
+        "duration": 300
+      },
+      {
+        "key": "1Key2",
+        "time": 8500,
+        "duration": 300
+      },
+      {
+        "key": "1Key5",
+        "time": 8500,
+        "duration": 300
+      },
+      {
+        "key": "1Key9",
+        "time": 8500,
+        "duration": 300
+      },
+      {
+        "key": "1Key4",
+        "time": 9500,
+        "duration": 300
+      },
+      {
+        "key": "1Key7",
+        "time": 9500,
+        "duration": 300
+      },
+      {
+        "key": "1Key11",
+        "time": 9500,
+        "duration": 300
+      },
+      {
+        "key": "1Key0",
+        "time": 10500,
+        "duration": 300
+      },
+      {
+        "key": "1Key7",
+        "time": 10500,
+        "duration": 300
+      },
+      {
+        "key": "1Key14",
+        "time": 10500,
+        "duration": 300
+      }
+    ]
+  }
+]
