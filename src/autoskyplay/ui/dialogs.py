@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
@@ -93,6 +94,9 @@ class SettingsDialog(QDialog):
         row.addWidget(button("keys.reset", self.reset_keys))
         row.addStretch()
         root.addLayout(row)
+        clear_engine = QPushButton("清理本地扒谱组件与模型")
+        clear_engine.clicked.connect(self.clear_transcription)
+        root.addWidget(clear_engine)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
@@ -100,6 +104,20 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
         self.reset_pitches = False
+
+    def clear_transcription(self):
+        from ..transcription.engine import clear_components
+
+        dialog = self.host.transcription_dialog
+        if dialog and dialog.active and dialog.busy:
+            QMessageBox.warning(self, "扒谱组件", "请先取消并等待当前任务或组件安装结束")
+            return
+        if QMessageBox.question(self, "清理扒谱组件", "移除已安装的扒谱组件和模型？已保存曲谱会保留。",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+            clear_components(self.host.store.directory)
+            if dialog and dialog.active:
+                dialog.update_engine()
 
     def reset_pitch(self):
         self.reset_pitches = True

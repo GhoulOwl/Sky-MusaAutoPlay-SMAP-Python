@@ -1,0 +1,9 @@
+{
+  "repository": "adefossez/HTDemucs",
+  "revision": "cbc8a9b1a87023b7fd74e7b3412e6321c0eab003",
+  "files": {
+    "htdemucs.yaml": "239c445d0b14454d541ad8bd9bb271c9e536d267e8a4625208744cbb2e7bb66c",
+    "955717e8.safetensors": "d9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd",
+    "README.md": "b34c13f1b6c3473bf44978f70b5c62666ee309514d6d50b34cf44827f9a38104"
+  }
+}

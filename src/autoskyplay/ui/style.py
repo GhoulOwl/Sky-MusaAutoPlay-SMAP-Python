@@ -20,6 +20,7 @@ EXTRA = {
         "曲名・作曲者・採譜者を検索…",
     ],
     "import": ["导入曲谱", "匯入曲譜", "Import scores", "曲譜をインポート"],
+    "transcribe": ["在线扒谱", "線上扒譜", "Transcribe song", "楽曲を採譜"],
     "create": ["创建曲谱", "建立曲譜", "New score", "曲譜を作成"],
     "practice": ["跟弹练习", "跟彈練習", "Practice", "練習"],
     "queue": ["播放队列", "播放佇列", "Play queue", "再生キュー"],
@@ -113,10 +114,10 @@ EXTRA = {
     "apply": ["应用到选中音符", "套用至選取音符", "Apply to selection", "選択に適用"],
     "remember": ["记住登录", "記住登入", "Remember login", "ログイン状態を保存"],
     "rememberhint": [
-        "令牌保存到系统凭据库，密码不会保存。",
-        "權杖儲存至系統憑證庫，不儲存密碼。",
-        "Tokens are stored in the system keyring. Passwords are never saved.",
-        "トークンはシステムの資格情報に保存されます。パスワードは保存しません。",
+        "令牌保存到项目目录的本地文件，账号密码不会保存。",
+        "權杖儲存至專案目錄的本機檔案，不儲存帳號密碼。",
+        "Tokens are saved locally in the project directory. Account passwords are never saved.",
+        "トークンはプロジェクト内のローカルファイルに保存されます。パスワードは保存しません。",
     ],
 }
 TRANSLATIONS.update(EXTRA)
@@ -206,6 +207,7 @@ def apply_theme(app, theme: str, font_size: int = 13):
             border-color: {c["accent"]}; }}
         QPushButton#modeOption:disabled {{ color: {c["muted"]}; }}
         QPushButton:disabled {{ color: {c["muted"]}; }}
+        QPushButton#accent:disabled {{ background: {c["raised"]}; color: {c["muted"]}; }}
         QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {{ background: {c["panel"]};
             border: 1px solid {c["border"]}; border-radius: 7px; padding: 7px; selection-background-color: {c["accent"]}; }}
         QComboBox QAbstractItemView {{ background: {c["panel"]}; selection-background-color: {c["accent"]}; }}

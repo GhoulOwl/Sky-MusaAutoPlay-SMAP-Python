@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         self.pool.setMaxThreadCount(3)
         self.closed = False
         self.practice_dialog = None
+        self.transcription_dialog = None
         self.cloud_client = CloudClient(store.data["cloud_url"])
         self.netease_service = NeteaseService(store.data["netease_port"], store.directory / "netease")
         self.netease_client = NeteaseClient(self.netease_service, credential_directory=store.directory)
@@ -120,6 +121,7 @@ class MainWindow(QMainWindow):
         self.cloud_pages = 0
         self.cloud_items = []
         self.cloud_generation = 0
+        self.library_generation = 0
         self.cloud_loading = False
         self.global_keyboard = GlobalKeyboard(self.bridge.key.emit)
         self.pressed = set()
@@ -227,6 +229,7 @@ class MainWindow(QMainWindow):
         header.addWidget(self.heading)
         header.addStretch()
         header.addWidget(button("import", self.import_files))
+        header.addWidget(button("transcribe", self.transcribe))
         header.addWidget(button("create", lambda: self.edit_score(Score()), accent=True))
         content.addLayout(header)
         filters = QHBoxLayout()
@@ -588,7 +591,10 @@ class MainWindow(QMainWindow):
         if self.pages.currentIndex() == 1:
             self.load_cloud(True)
             return
-        self.run_job(lambda: scan_library(self.store.songs_dir), self.library_loaded)
+        self.library_generation += 1
+        generation = self.library_generation
+        self.run_job(lambda: scan_library(self.store.songs_dir),
+                     lambda result: self.library_loaded(result) if generation == self.library_generation else None)
 
     def library_loaded(self, result):
         self.scores = result.scores
@@ -1158,6 +1164,17 @@ class MainWindow(QMainWindow):
         if errors:
             self.show_error("\n".join(errors))
 
+    def transcribe(self):
+        from .transcription import TranscriptionDialog
+
+        if self.transcription_dialog and self.transcription_dialog.active:
+            self.transcription_dialog.show()
+            self.transcription_dialog.raise_()
+            self.transcription_dialog.activateWindow()
+            return
+        self.transcription_dialog = TranscriptionDialog(self)
+        self.transcription_dialog.show()
+
     def edit_score(self, score):
         self.stop()
         self.release_manual()
@@ -1174,6 +1191,7 @@ class MainWindow(QMainWindow):
                 self.update_queue()
                 self.show_page(0)
                 self.refresh()
+                return saved
             except (OSError, ValueError) as exc:
                 self.show_error(str(exc))
 
@@ -1598,6 +1616,10 @@ class MainWindow(QMainWindow):
             self.status.setText(str(exc))
 
     def closeEvent(self, event):
+        if self.transcription_dialog and self.transcription_dialog.active:
+            if not self.transcription_dialog.close():
+                event.ignore()
+                return
         self.closed = True
         self.timer.stop()
         self.autoplay.stop()

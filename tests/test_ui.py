@@ -513,7 +513,7 @@ def test_netease_startup_restores_saved_session_and_editor_tracks_progress(qtbot
     window.close()
 
 
-def test_netease_logout_disables_restore_even_when_keyring_delete_fails(qtbot, tmp_path, monkeypatch,
+def test_netease_logout_disables_restore_even_when_local_delete_fails(qtbot, tmp_path, monkeypatch,
                                                                       credential_store):
     from PySide6.QtWidgets import QMessageBox
 
@@ -530,12 +530,12 @@ def test_netease_logout_disables_restore_even_when_keyring_delete_fails(qtbot, t
     monkeypatch.setattr(window, "show_error", errors.append)
 
     def delete(*args):
-        raise RuntimeError("credential service unavailable")
+        raise OSError("local credential file is not writable")
 
     def request(*args, **kwargs):
         raise NeteaseError("网络不可用")
 
-    monkeypatch.setattr("autoskyplay.auth.keyring.delete_password", delete)
+    monkeypatch.setattr("autoskyplay.auth._delete_credential", delete)
     monkeypatch.setattr(window.netease_client, "request", request)
     monkeypatch.setattr(QMessageBox, "exec", lambda dialog: QMessageBox.StandardButton.Yes)
     window.logout_netease()

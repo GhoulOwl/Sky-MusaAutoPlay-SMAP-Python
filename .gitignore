@@ -1,4 +1,6 @@
 .venv/
+.transcription-venv/
+.autoskyplay/
 __pycache__/
 *.pyc
 .pytest_cache/

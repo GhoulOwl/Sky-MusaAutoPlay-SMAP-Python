@@ -25,7 +25,8 @@ jobs:
       - run: uv run ruff check src tests scripts
       - run: uv run pytest -q
       - run: uv run autoskyplay --smoke-test --data-dir smoke-data --screenshot artifacts/main.png
+      - run: uv run autoskyplay --smoke-test --transcribe --data-dir smoke-data --screenshot artifacts/transcription.png
       - uses: actions/upload-artifact@v4
         with:
           name: screenshot-${{ runner.os }}
-          path: artifacts/main.png
+          path: artifacts/*.png

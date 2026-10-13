@@ -35,8 +35,6 @@ def main():
         "autoskyplay",
         "--add-binary",
         f"{BUNDLE / 'runtime' / ('node.exe' if sys.platform == 'win32' else 'node')}:autoskyplay/assets/netease/runtime",
-        "--collect-submodules",
-        "keyring.backends",
         "--exclude-module",
         "PySide6.QtWebEngineCore",
         "--exclude-module",

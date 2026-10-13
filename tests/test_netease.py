@@ -346,9 +346,9 @@ def test_changed_status_shape_does_not_delete_session(tmp_path, credential_store
 
 def test_credential_write_failure_keeps_current_login_usable(tmp_path, monkeypatch):
     def fail(*args):
-        raise RuntimeError("no keyring")
+        raise OSError("local credential directory is not writable")
 
-    monkeypatch.setattr("autoskyplay.auth.keyring.set_password", fail)
+    monkeypatch.setattr("autoskyplay.auth._write_credential", fail)
     client = make_client(
         lambda request: httpx.Response(200, json={"data": {"profile": {"userId": 1}}}), tmp_path
     )

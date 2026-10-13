@@ -38,3 +38,17 @@ Node.js 22.22.0 is redistributed with platform-specific application builds.
 Its MIT license and bundled third-party notices are included in
 `assets/netease/runtime/LICENSE`. The runtime is downloaded from nodejs.org and
 verified against the release's official SHA-256 checksum manifest.
+
+# 本地扒谱可选组件
+
+独立 CPU 组件使用 [Demucs](https://github.com/adefossez/demucs) 4.1.0（MIT）和
+[torchcrepe](https://github.com/maxrmorrison/torchcrepe) 0.0.24（MIT），以及
+[HTDemucs 模型](https://huggingface.co/adefossez/HTDemucs)，固定修订与文件哈希见
+`engine/models.json`。torchcrepe 随包提供由原 CREPE 权重转换的 full/tiny 模型。
+相关来源、模型说明与已安装依赖的许可证随组件包保存。
+
+解码使用 imageio-ffmpeg 0.6.0 随包 FFmpeg 二进制，其源代码和构建说明见
+[imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) 与
+[FFmpeg 构建项目](https://github.com/BtbN/FFmpeg-Builds)。FFmpeg 许可证以对应发行构建为准；
+组件的 `licenses/` 目录收录各依赖分发中的 LICENSE/COPYING/NOTICE 与 FFmpeg 的 `-L` 输出，
+主程序仍按 GPL-3.0 分发。

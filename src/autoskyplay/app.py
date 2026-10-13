@@ -19,6 +19,7 @@ def main(argv=None):
     parser.add_argument("--no-audio", action="store_true", help="Run without opening an audio device")
     parser.add_argument("--no-global-hotkeys", action="store_true")
     parser.add_argument("--smoke-test", action="store_true", help="Open UI, capture if requested, then exit")
+    parser.add_argument("--transcribe", action="store_true", help="Open the local transcription window")
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--import", dest="imports", type=Path, nargs="*", default=[])
     parser.add_argument("--inspect", type=Path, help="Print score metadata without starting the UI")
@@ -67,11 +68,14 @@ def main(argv=None):
         restore_netease=not args.smoke_test,
     )
     window.show()
+    if args.transcribe:
+        window.transcribe()
     if args.screenshot:
 
         def capture():
             args.screenshot.parent.mkdir(parents=True, exist_ok=True)
-            window.grab().save(str(args.screenshot))
+            target = window.transcription_dialog if args.transcribe else window
+            target.grab().save(str(args.screenshot))
 
         QTimer.singleShot(350, capture)
     if args.smoke_test:
@@ -80,6 +84,8 @@ def main(argv=None):
     code = app.exec()
     window.player.stop()
     window.pool.waitForDone()
+    if window.transcription_dialog and window.transcription_dialog.task:
+        window.transcription_dialog.task.thread.join(timeout=25)
     window.cloud_client.close()
     window.netease_client.close()
     window.netease_service.close()

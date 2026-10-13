@@ -1,12 +1,13 @@
 """Embedded service lifecycle and a small adapter for the unofficial NetEase API.
 
-Only metadata and QR login are exposed. The cookie is shared by every editor and
-remembered in the OS credential store, never in state.json or the environment.
+Metadata, authorized playback URLs and QR login are exposed. The cookie is shared by every editor and
+remembered in private project-local files, never in state.json or the environment.
 """
 
 from __future__ import annotations
 
 import atexit
+import math
 import os
 import re
 import secrets
@@ -183,6 +184,7 @@ class NeteaseSong:
     artists: str
     album: str
     cover_url: str
+    duration_ms: float = 0
 
     @classmethod
     def parse(cls, value):
@@ -195,12 +197,40 @@ class NeteaseSong:
                 " / ".join(str(a["name"]) for a in artists),
                 str(album.get("name", "")),
                 str(album.get("picUrl", "")),
+                max(0, float(value.get("dt") or value.get("duration") or 0)),
             )
-            if not result.name:
+            if not result.name or not math.isfinite(result.duration_ms) or result.duration_ms > 86_400_000:
                 raise ValueError()
             return result
         except (KeyError, TypeError, AttributeError, ValueError) as exc:
             raise NeteaseError("网易云歌曲信息格式发生变化，请更新应用后重试") from exc
+
+
+def audio_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if (parsed.scheme not in ("http", "https") or parsed.username or parsed.password
+            or parsed.port not in (None, 80, 443)
+            or not host.endswith((".music.126.net", ".music.163.com"))):
+        raise NeteaseError("网易云音频地址格式发生变化，请更新应用后重试")
+    return parsed._replace(scheme="https", netloc=host).geturl()
+
+
+@dataclass(frozen=True)
+class NeteaseAudio:
+    id: str
+    url: str
+    duration_ms: float
+    trial_start: float | None = None
+    trial_end: float | None = None
+
+    @property
+    def is_trial(self):
+        return self.trial_start is not None
+
+    @property
+    def available_seconds(self):
+        return self.trial_end - self.trial_start if self.is_trial else self.duration_ms / 1000
 
 
 class NeteaseClient:
@@ -214,6 +244,7 @@ class NeteaseClient:
         self.credential_directory = credential_directory
         self.remembered = False
         self.auth_warning = ""
+        self.transport = transport
 
     def request(self, route, **params):
         with self.lock:
@@ -301,7 +332,7 @@ class NeteaseClient:
         if not self.credential_directory:
             return {}
         with self.lock:
-            # Keep a saved session on network/keyring failures so the user can retry.
+            # Keep a saved session on network/file read failures so the user can retry.
             self.remembered = True
             try:
                 cookie = load_netease_auth(self.credential_directory)
@@ -408,6 +439,77 @@ class NeteaseClient:
                 return bytes(data)
         except httpx.HTTPError as exc:
             raise NeteaseError("专辑封面下载失败，请检查网络后重试，或使用手动设置封面") from exc
+
+    def playback_audio(self, identifier) -> NeteaseAudio:
+        identifier = song_id(str(identifier))
+        data = self.request("/song/url/v1", id=identifier, level="standard").get("data")
+        try:
+            if not isinstance(data, list) or not data or str(data[0]["id"]) != identifier:
+                raise ValueError()
+            value = data[0]
+            if not value.get("url") or value.get("code", 200) != 200:
+                raise NeteaseError("当前账号无法获取该歌曲音频，可能需要登录、会员或歌曲在当前地区不可用")
+            duration = float(value.get("time") or 0)
+            if not math.isfinite(duration) or duration < 0 or duration > 86_400_000:
+                raise ValueError()
+            trial = value.get("freeTrialInfo")
+            start = end = None
+            if trial not in (None, "null"):
+                start, end = float(trial["start"]), float(trial["end"])
+                if not all(math.isfinite(x) for x in (start, end)) or not 0 <= start < end <= 86400:
+                    raise ValueError()
+            return NeteaseAudio(identifier, audio_url(value["url"]), duration, start, end)
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, NeteaseError):
+                raise
+            raise NeteaseError("网易云音频信息格式发生变化，请更新应用后重试") from None
+
+    def download_audio(self, audio: NeteaseAudio, target: Path, cancelled=lambda: False,
+                       progress=lambda value: None, max_bytes=100 * 1024 * 1024):
+        """Stream to an atomic file, with a fresh credential-free CDN client."""
+        target = Path(target)
+        temporary = target.with_suffix(target.suffix + ".part")
+        temporary.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with httpx.Client(timeout=httpx.Timeout(20, connect=10), transport=self.transport) as media:
+                url = audio_url(audio.url)
+                for _ in range(6):
+                    if cancelled():
+                        raise NeteaseError("音频下载已取消")
+                    # Short-link/cover cookies and the login session never reach the CDN.
+                    media.cookies.clear()
+                    with media.stream("GET", url) as reply:
+                        if reply.status_code in (301, 302, 303, 307, 308):
+                            url = audio_url(urljoin(url, reply.headers.get("location", "")))
+                            continue
+                        reply.raise_for_status()
+                        if "text/" in reply.headers.get("content-type", ""):
+                            raise NeteaseError("网易云返回的内容不是音频，请重新获取歌曲")
+                        length = int(reply.headers.get("content-length", 0))
+                        if length > max_bytes:
+                            raise NeteaseError("音频超过 100 MB，请选择更短的歌曲")
+                        received = 0
+                        with temporary.open("wb") as output:
+                            for chunk in reply.iter_bytes(64 * 1024):
+                                if cancelled():
+                                    raise NeteaseError("音频下载已取消")
+                                received += len(chunk)
+                                if received > max_bytes:
+                                    raise NeteaseError("音频超过 100 MB，请选择更短的歌曲")
+                                output.write(chunk)
+                                progress(min(100, int(received * 100 / length)) if length else 0)
+                        if not received or (length and received != length):
+                            raise NeteaseError("音频下载不完整，请重试")
+                        temporary.replace(target)
+                        progress(100)
+                        return target
+                raise NeteaseError("网易云音频跳转次数过多，请重新获取歌曲")
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            if isinstance(exc, NeteaseError):
+                raise
+            raise NeteaseError("音频下载失败，请检查网络或重新获取歌曲后重试") from None
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def close(self):
         with self.lock:

@@ -15,6 +15,15 @@ SKY_MIDI = (60, 62, 64, 65, 67, 69, 71, 72, 74, 76, 77, 79, 81, 83, 84)
 WHITE = {0, 2, 4, 5, 7, 9, 11}
 
 
+def track_name(value):
+    # Mido defaults to Latin-1 for arbitrary MIDI text. Recover UTF-8 titles
+    # produced by modern exporters while retaining older single-byte names.
+    try:
+        return value.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return value
+
+
 def to_sky_key(pitch: int, direction: int = 0) -> int:
     while pitch < 60:
         pitch += 12
@@ -61,7 +70,7 @@ class MidiImporter:
         return [
             (
                 i,
-                self.file.tracks[i].name or f"Track {i + 1}",
+                track_name(self.file.tracks[i].name) or f"Track {i + 1}",
                 sum(m.type == "note_on" and m.velocity > 0 for _, m in events),
             )
             for i, events in enumerate(self.events)

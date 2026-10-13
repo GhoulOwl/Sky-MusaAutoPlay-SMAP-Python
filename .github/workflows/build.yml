@@ -26,6 +26,7 @@ jobs:
           uv run python scripts/build.py --installer
       - if: runner.os == 'macOS'
         run: uv run python scripts/build.py
+      - run: uv run python scripts/prepare_transcription.py --package
       - uses: actions/upload-artifact@v4
         with:
           name: AutoSkyPlay-${{ runner.os }}
@@ -33,3 +34,5 @@ jobs:
             dist/AutoSkyPlay-Setup.exe
             dist/AutoSkyPlay.dmg
             dist/AutoSkyPlay/**
+            dist/AutoSkyPlay-Transcription-*.zip
+            dist/AutoSkyPlay-Transcription-*.zip.sha256

@@ -21,6 +21,7 @@ const definitions = {
   '/login/status': ['login_status', []],
   '/logout': ['logout', []],
   '/song/detail': ['song_detail', ['ids']],
+  '/song/url/v1': ['song_url_v1', ['id', 'level']],
   '/cloudsearch': ['cloudsearch', ['keywords', 'type', 'limit', 'offset']],
 };
 const routes = Object.fromEntries(Object.entries(definitions).map(([route, [name, fields]]) =>
@@ -50,6 +51,9 @@ const server = http.createServer(async (req, res) => {
     }
     const data = JSON.parse(body);
     const query = { cookie: cookieToJson(data.cookie || ''), timeout: 15000 };
+    // The pinned upstream's xeapi default requires a separately provisioned key.
+    // Playback v1 still supports eapi and enforces the same account entitlements.
+    if (req.url === '/song/url/v1') query.crypto = 'eapi';
     for (const field of route.fields) if (data[field] !== undefined) query[field] = data[field];
     const result = await route.fn(query, request);
     if (!result || !result.body) throw new Error('Invalid upstream response');

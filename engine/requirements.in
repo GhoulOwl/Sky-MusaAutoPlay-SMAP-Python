@@ -1,0 +1,17 @@
+# CPU engine only. The desktop application does not import these packages.
+--extra-index-url https://download.pytorch.org/whl/cpu
+demucs==4.1.0
+torchcrepe==0.0.24
+librosa==0.11.0
+huggingface-hub==0.35.3
+sphn==0.2.1
+imageio-ffmpeg==0.6.0
+pyinstaller==6.16.0
+torch==2.8.0; sys_platform == 'darwin' and platform_machine != 'x86_64'
+torchaudio==2.8.0; sys_platform == 'darwin' and platform_machine != 'x86_64'
+torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'
+torchaudio==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'
+numpy==1.26.4; sys_platform == 'darwin' and platform_machine == 'x86_64'
+torch==2.8.0+cpu; sys_platform != 'darwin'
+torchaudio==2.8.0+cpu; sys_platform != 'darwin'
+numpy==2.2.6; sys_platform != 'darwin' or platform_machine != 'x86_64'

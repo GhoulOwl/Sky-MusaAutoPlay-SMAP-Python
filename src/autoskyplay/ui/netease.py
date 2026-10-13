@@ -82,7 +82,7 @@ class NeteaseLoginDialog(ServiceDialog):
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         root.addWidget(self.status)
-        root.addWidget(label("登录会话保存到系统凭据库，重启后自动恢复。", "muted"))
+        root.addWidget(label("登录会话保存到项目目录的本地文件，重启后自动恢复。", "muted"))
         self.refresh = QPushButton("刷新二维码")
         self.refresh.clicked.connect(self.load_qr)
         root.addWidget(self.refresh)
@@ -167,9 +167,10 @@ class NeteaseLoginDialog(ServiceDialog):
 
 
 class NeteaseSongDialog(ServiceDialog):
-    def __init__(self, editor):
+    def __init__(self, editor, picker=False):
         super().__init__(editor, editor.host)
-        self.setWindowTitle("从网易云获取")
+        self.picker = picker
+        self.setWindowTitle("选择网易云歌曲" if picker else "从网易云获取")
         self.resize(810, 530)
         self.selection = None
         self.songs = []
@@ -177,7 +178,7 @@ class NeteaseSongDialog(ServiceDialog):
         self.total = 0
         self.query = ""
         root = QVBoxLayout(self)
-        root.addWidget(label("填写曲名、歌手与专辑封面", "heading"))
+        root.addWidget(label("选择歌曲" if picker else "填写曲名、歌手与专辑封面", "heading"))
         self.session = label("", "muted")
         root.addWidget(self.session)
         row = QHBoxLayout()
@@ -202,8 +203,9 @@ class NeteaseSongDialog(ServiceDialog):
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         root.addWidget(self.status)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["封面", "曲名", "歌手", "专辑", "歌曲 ID"])
+        self.table = QTableWidget(0, 6 if picker else 5)
+        self.table.setHorizontalHeaderLabels(["序号", "封面", "歌曲名", "歌手", "专辑", "时长"] if picker
+                                             else ["封面", "曲名", "歌手", "专辑", "歌曲 ID"])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -227,7 +229,7 @@ class NeteaseSongDialog(ServiceDialog):
         self.text_only.clicked.connect(self.fill_text)
         self.text_only.hide()
         controls.addWidget(self.text_only)
-        self.apply = QPushButton("填写所选歌曲")
+        self.apply = QPushButton("选择此歌曲" if picker else "填写所选歌曲")
         self.apply.clicked.connect(self.fill)
         self.apply.setEnabled(False)
         controls.addWidget(self.apply)
@@ -236,6 +238,11 @@ class NeteaseSongDialog(ServiceDialog):
         controls.addWidget(cancel)
         root.addLayout(controls)
         self.busy = False
+        if picker:
+            self.mode.setCurrentIndex(1)
+            self.table.setColumnWidth(0, 48)
+            self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(1, 68)
         self.mode_changed()
 
     def update_session(self):
@@ -319,7 +326,10 @@ class NeteaseSongDialog(ServiceDialog):
         self.songs, self.total = result
         self.table.setRowCount(len(self.songs))
         for row, song in enumerate(self.songs):
-            for col, text in enumerate(["加载中…", song.name, song.artists, song.album, song.id]):
+            values = ([str(self.offset + row + 1), "加载中…", song.name, song.artists, song.album,
+                       f"{int(song.duration_ms // 60000):02d}:{int(song.duration_ms / 1000) % 60:02d}"]
+                      if self.picker else ["加载中…", song.name, song.artists, song.album, song.id])
+            for col, text in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(text))
             self.table.setRowHeight(row, 62)
         self.status.setText(
@@ -334,15 +344,15 @@ class NeteaseSongDialog(ServiceDialog):
             def loaded(data, row=row):
                 pixmap = QPixmap()
                 if pixmap.loadFromData(data):
-                    self.table.item(row, 0).setIcon(QIcon(pixmap))
-                    self.table.item(row, 0).setText("")
+                    self.table.item(row, 1 if self.picker else 0).setIcon(QIcon(pixmap))
+                    self.table.item(row, 1 if self.picker else 0).setText("")
                 else:
-                    self.table.item(row, 0).setText("封面无效")
+                    self.table.item(row, 1 if self.picker else 0).setText("封面无效")
 
             self.job(
                 lambda song=song: self.client.cover(song),
                 loaded,
-                lambda _, row=row: self.table.item(row, 0).setText("封面未加载"),
+                lambda _, row=row: self.table.item(row, 1 if self.picker else 0).setText("封面未加载"),
                 priority=-1,
             )
 
