@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AutoSkyPlay · 小节精修与稀疏和弦对照</title>
+<style>
+:root{color-scheme:dark;--bg:#10151d;--panel:#19222e;--line:#334153;--ink:#edf2f7;--muted:#a9b8ca;--accent:#86cbb4;--amber:#eac178;--rose:#ed859a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1240px;margin:auto;padding:40px 28px 80px}a{color:var(--accent)}h1{font-size:32px;line-height:1.3;margin:12px 0}h2{font-size:20px;margin:0}.muted,small{color:var(--muted)}.eyebrow{color:var(--accent);letter-spacing:.13em;font-size:12px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:18px 0}.flex{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.spread{justify-content:space-between}button,select{font:inherit;color:inherit;background:#212e3e;border:1px solid #45566c;border-radius:8px;padding:9px 15px;cursor:pointer}button:hover{border-color:var(--accent)}button[aria-pressed=true]{background:#244a42;border-color:var(--accent)}button:disabled{opacity:.38;cursor:not-allowed}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--amber);outline-offset:3px}#tracks{margin-top:26px}#windows{margin:20px 0}#status{border-left:3px solid var(--amber);padding:10px 14px;background:#2c2a25;border-radius:3px;white-space:pre-line}#status.ok{border-color:var(--accent);background:#203b35}#plot{width:100%;height:290px;display:block;background:#111923;border-radius:8px;margin:18px 0}input[type=range]{accent-color:var(--accent);flex:1;min-width:180px}input[type=checkbox]{accent-color:var(--accent)}.legend{font-size:13px;display:flex;gap:20px;flex-wrap:wrap}.pill{padding:3px 9px;border:1px solid var(--line);border-radius:6px;font-size:12px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:20px}.metric{border-left:2px solid var(--line);padding-left:14px}.metric strong{font-size:24px;display:block}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}table{width:100%;border-collapse:collapse;margin-top:16px;font-variant-numeric:tabular-nums}td,th{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:13px}details{margin-top:14px}summary{cursor:pointer}.nowrap{white-space:nowrap}#seektime{font-variant-numeric:tabular-nums;min-width:125px}.warn{color:var(--amber)}#error{color:var(--rose)}@media(max-width:760px){main{padding:24px 16px}.grid{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}h1{font-size:26px}.panel{padding:16px}table{font-size:12px}button{padding:8px 10px}}
+</style>
+<main>
+<div class="eyebrow">AUTOSKYPLAY / LOCAL REVIEW / 2026.10.14</div>
+<h1>小节精修，先听再接受。</h1>
+<p class="muted">固定原稿节拍与移调，对照单音伴奏、稀疏和弦及局部重新识别。钢琴默认仍为单音伴奏，小提琴默认仍为纯主旋律。</p>
+<div class="flex"><a href="report.md">查看验证报告</a><span>·</span><a href="comparison.json">原始验证数据</a><span>·</span><a href="../muscriptor/">上一轮模型对比</a></div>
+<nav id="tracks" class="flex" aria-label="选择歌曲"></nav>
+<section class="panel">
+<div class="flex spread"><div><h2 id="title"></h2><div id="credit" class="muted"></div></div><span class="pill" id="coverage"></span></div>
+<div id="windows" class="flex" aria-label="选择对照片段"></div>
+<div class="flex spread"><div class="flex"><label>演奏编配 <select id="profile"><option value="Piano-simple">钢琴 · 稀疏单音</option><option value="Piano-chords" selected>钢琴 · 稀疏和弦（实验）</option><option value="Violin-auto">小提琴 · 主旋律</option></select></label><label><input type="checkbox" id="lead"> 仅主旋律</label></div><label><input type="checkbox" id="diff" checked> 显示差异</label></div>
+<div id="versions" class="flex" style="margin:18px 0" aria-label="选择试听版本"></div>
+<div id="status" role="status"></div>
+<canvas id="plot" aria-label="当前片段的光遇键位卷帘图，绿色轮廓为候选独有音符，红色虚线为原版独有音符"></canvas>
+<div class="legend"><span>浅绿：主旋律</span><span style="color:var(--amber)">金色：伴奏</span><span style="color:#41bd8c">绿框：候选独有</span><span style="color:var(--rose)">红虚线：原版独有</span></div>
+<div class="flex" style="margin-top:20px"><button id="play">播放</button><input id="seek" type="range" min="0" max="1000" step="1" value="0" aria-label="拖动试听进度"><span id="seektime"></span><label><input id="loop" type="checkbox" checked> 循环片段</label><label>音量 <input id="volume" type="range" min="0" max="100" value="65" style="min-width:90px;width:90px"></label></div>
+<p class="muted" style="font-size:13px">切换版本保持当前位置；每段音频包含进入片段前已响起的音尾。谱面使用统一增益，无逐段响度归一化；原曲为固定 0.5 倍参考增益，不能据此比较响度。差异不等于错误或改善。</p>
+<div id="error" role="alert"></div><div id="metrics" class="metrics"></div>
+<details><summary>本候选的边界检查与资源记录</summary><div id="detail"></div></details>
+</section>
+<section class="grid"><div class="panel"><h2>这首歌的编配变化</h2><p class="muted">统计覆盖原稿的整个识别范围，试听只覆盖上方三个片段。双音组表示两枚伴奏键同时起音，旋律另计。</p><table><thead><tr><th>模式</th><th>旋律</th><th>伴奏音</th><th>双音组</th></tr></thead><tbody id="counts"></tbody></table></div><div class="panel"><h2>本轮结论与限制</h2><p id="finding"></p><p class="muted">候选只重新识别选区及上下文。任何无法匹配的跨界音符都会阻止接受；下方可试听被拦截的草拟拼接，但它不是已通过版本。界面没有自动“更准确”评分。</p><p class="muted">未引入新的节奏模型。参考小节只是已有拍点分组；时值保护不代表源模型没有漏音、错音或误分割。</p></div></section>
+<audio id="audio" preload="auto"></audio>
+</main>
+<script>
+const DATA=__DATA__;
+const $=id=>document.getElementById(id);
+let song=['summer','secret','love'].includes(location.hash.slice(1))?location.hash.slice(1):'summer',wi=0,version='baseline',serial=0;
+const audio=$('audio'); audio.volume=.65;
+const names={'Piano-melody':'钢琴 · 纯旋律','Piano-simple':'钢琴 · 稀疏单音','Piano-chords':'钢琴 · 稀疏和弦','Violin-auto':'小提琴 · 主旋律'};
+const findings={summer:'和弦模式没有保留双音：旋律密度和叠响筛选阻止了多数候选。当前不能据此声称这首钢琴曲的和弦听感得到改善。',secret:'和弦模式产生了更多有来源依据的双音支撑，可重点比较主唱清晰度与低声部叠响；仍需人工听审。',love:'本轮沿用历史 90.83 秒原稿，和弦增量很少。0–16 秒 small 候选通过边界保护检查；其余窗口仍有冲突，不代表 medium 更准确。'};
+function current(){return DATA.windows.filter(w=>w.song===song)[wi]}
+function key(){return $('profile').value+(version==='small'||version==='medium'?'-refine-'+version:'')}
+function info(){return DATA.refinements.find(r=>r.song===song&&r.window===wi&&r.profile===$('profile').value&&r.model===(version==='medium'?'medium':'small'))}
+function stamp(s){return `${Math.floor(s/60)}:${(s%60).toFixed(2).padStart(5,'0')}`}
+function button(text,pressed,fn){const b=document.createElement('button');b.textContent=text;b.setAttribute('aria-pressed',pressed);b.onclick=fn;return b}
+function nav(){
+ history.replaceState(null,'','#'+song);
+ $('tracks').replaceChildren(...DATA.cases.map(c=>button(c.title,c.id===song,()=>{song=c.id;wi=0;version='baseline';nav();load(false)})));
+ const c=DATA.cases.find(c=>c.id===song);$('title').textContent=c.title;$('credit').textContent=c.song.artists+' · '+c.song.album;
+ $('coverage').textContent=song==='love'?'原稿覆盖 0–90.83 秒':'原稿覆盖全曲';
+ $('windows').replaceChildren(...DATA.windows.filter(w=>w.song===song).map((w,i)=>button(`${w.label} · ${w.start}–${w.end}s`,i===wi,()=>{wi=i;if(!current().versions[key()])version='baseline';nav();load(false)})));
+ $('counts').replaceChildren(...DATA.comparisons.filter(c=>c.song===song).map(c=>{const tr=document.createElement('tr');[names[c.profile],c.melody,c.support,c.dyads].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.append(td)});return tr}));
+ $('finding').textContent=findings[song];
+}
+function presentation(){
+ const w=current(),r=info(),isCandidate=version==='small'||version==='medium';
+ $('lead').disabled=version==='source';
+ $('versions').replaceChildren(...[['baseline','原版'],['small','small 候选'],['medium','medium 候选'],['source','原曲']].map(([v,label])=>{const b=button(label,v===version,()=>{version=v;load(true)});b.disabled=v==='medium'&&!w.versions[$('profile').value+'-refine-medium']||v==='small'&&!w.versions[$('profile').value+'-refine-small'];return b}));
+ $('status').className=isCandidate&&r&&!r.conflicts.length?'ok':'';
+ $('status').textContent=version==='source'?'原曲参考 · 卷帘显示当前编配的原版谱面':!isCandidate?'原版编配 · 接受操作不会覆盖此版本':!r?'候选不可用':r.conflicts.length?`待修正 · ${r.conflicts.length} 项边界冲突，禁止接受。此试听仅供排查。`:'通过边界保护检查 · 可在应用内试听后接受为新版本；不代表音乐准确性已通过。';
+ const notes=w.versions[key()]||w.versions[$('profile').value],lead=notes.filter(n=>n.r!=='accompaniment'),support=notes.filter(n=>n.r==='accompaniment');
+ const values=[['片段旋律音',lead.length],['片段伴奏音',support.length],['长音 ≥1 秒',lead.filter(n=>n.d>=1000).length],['候选边界冲突',isCandidate&&r?r.conflicts.length:'—']];
+ $('metrics').replaceChildren(...values.map(([l,v])=>{const d=document.createElement('div');d.className='metric';const b=document.createElement('strong');b.textContent=v;const s=document.createElement('span');s.textContent=l;d.append(b,s);return d}));
+ $('detail').replaceChildren();
+ if(r){const p=document.createElement('p');p.textContent=`${r.model} · 含上下文的一次识别 ${r.seconds.toFixed(1)} 秒 · 子进程采样峰值 RSS ${(r.rss/2**30).toFixed(2)} GiB（不含 GPU/MPS 完整占用）。选区音符 ${r.diagnostics.before_notes} → ${r.diagnostics.after_notes}；保护 ${r.diagnostics.protected_notes} 个区外／跨界音符。`; $('detail').append(p);const list=document.createElement('ul');r.conflicts.forEach(c=>{const li=document.createElement('li');li.textContent=c;list.append(li)});$('detail').append(list);}
+ draw();
+}
+function load(preserve){
+ const position=preserve?audio.currentTime:0,playing=preserve&&!audio.paused,token=++serial;audio.pause();
+ const file=current().id+'-'+(version==='source'?'source':key()+'-'+($('lead').checked?'lead':'full'))+'.wav';
+ audio.src='media/'+file;$('error').textContent='';
+ audio.onloadedmetadata=()=>{if(token!==serial)return;audio.currentTime=Math.min(position,Math.max(0,audio.duration-.01));if(playing)audio.play().catch(showError);positionUI()};audio.load();presentation();
+}
+function showError(e){$('error').textContent='音频播放失败：'+(e.message||'请检查本地试听服务');}
+function positionUI(){const len=current().end-current().start;$('seek').value=(audio.currentTime/len)*1000;$('seektime').textContent=stamp(current().start+audio.currentTime)+' / '+stamp(current().end);$('play').textContent=audio.paused?'播放':'暂停';draw()}
+function noteId(n){return [n.k,n.t,n.d,n.r].join('/')}
+function draw(){
+ const canvas=$('plot'),dpr=window.devicePixelRatio||1,rect=canvas.getBoundingClientRect(),ctx=canvas.getContext('2d');canvas.width=rect.width*dpr;canvas.height=rect.height*dpr;ctx.scale(dpr,dpr);
+ const w=current(),width=rect.width,height=rect.height,pad=38,top=20,rh=(height-top-28)/15,span=(w.end-w.start)*1000;
+ const x=t=>pad+(t-w.start*1000)/span*(width-pad-14),y=k=>top+(14-k)*rh;
+ ctx.font='11px -apple-system,sans-serif';for(let k=0;k<15;k++){ctx.fillStyle=k%2?'#15202c':'#111923';ctx.fillRect(pad,y(k),width-pad,rh);ctx.fillStyle='#98aabd';ctx.fillText(k+1,12,y(k)+rh*.7)}
+ for(let s=w.start;s<=w.end;s+=2){ctx.strokeStyle='#2c3949';ctx.beginPath();ctx.moveTo(x(s*1000),top);ctx.lineTo(x(s*1000),height-28);ctx.stroke();ctx.fillStyle='#98aabd';ctx.fillText(s+'s',x(s*1000)-6,height-8)}
+ const visible=n=>!$('lead').checked||n.r!=='accompaniment';const notes=(w.versions[key()]||w.versions[$('profile').value]).filter(visible);
+ ctx.save();ctx.beginPath();ctx.rect(pad,top,width-pad-14,height-top-28);ctx.clip();
+ notes.forEach(n=>{ctx.fillStyle=n.r==='accompaniment'?'#d5b36f':'#86cbb4';ctx.fillRect(x(n.t),y(n.k)+2,Math.max(2,n.d/span*(width-pad-14)),rh-4)});
+ if($('diff').checked){const base=w.versions[$('profile').value].filter(visible),candidate=w.versions[$('profile').value+'-refine-'+(version==='medium'?'medium':'small')];if(candidate){const cand=candidate.filter(visible),old=new Set(base.map(noteId)),recent=new Set(cand.map(noteId));[[cand.filter(n=>!old.has(noteId(n))),'#41bd8c',[]],[base.filter(n=>!recent.has(noteId(n))),'#ed859a',[4,3]]].forEach(([ns,color,dash])=>{ctx.strokeStyle=color;ctx.lineWidth=1.8;ctx.setLineDash(dash);ns.forEach(n=>ctx.strokeRect(x(n.t),y(n.k)+1,Math.max(3,n.d/span*(width-pad-14)),rh-2))});ctx.setLineDash([])}}
+ ctx.strokeStyle='#fff';ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(x((w.start+audio.currentTime)*1000),top);ctx.lineTo(x((w.start+audio.currentTime)*1000),height-28);ctx.stroke();ctx.restore();
+}
+$('play').onclick=()=>audio.paused?audio.play().catch(showError):audio.pause();$('seek').oninput=()=>{audio.currentTime=Number($('seek').value)/1000*(current().end-current().start);positionUI()};$('volume').oninput=()=>audio.volume=Number($('volume').value)/100;$('profile').onchange=()=>load(true);$('lead').onchange=()=>load(true);$('diff').onchange=draw;audio.ontimeupdate=positionUI;audio.onplay=positionUI;audio.onpause=positionUI;audio.onerror=showError;audio.onended=()=>{if($('loop').checked){audio.currentTime=0;audio.play().catch(showError)}};window.addEventListener('resize',draw);
+nav();load(false);
+</script>
+</html>

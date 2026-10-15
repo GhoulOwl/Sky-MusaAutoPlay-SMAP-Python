@@ -326,6 +326,39 @@ def test_netease_search_requires_version_selection(qtbot, tmp_path, monkeypatch)
     window.close()
 
 
+@pytest.mark.parametrize('picker', [False, True])
+@pytest.mark.parametrize('key', [Qt.Key.Key_Return, Qt.Key.Key_Enter])
+def test_netease_enter_searches_once_without_upload_or_login(qtbot, tmp_path, monkeypatch, picker, key):
+    from autoskyplay.ui.netease import NeteaseSongDialog
+
+    window, score = make_window(qtbot, tmp_path)
+    searches, uploads, logins, details = [], [], [], []
+    monkeypatch.setattr(window.netease_client, 'search', lambda value: searches.append(value) or ([], 0))
+    monkeypatch.setattr(window.netease_client, 'detail', lambda value: details.append(value))
+    monkeypatch.setattr(window, 'netease_login', lambda: logins.append(True))
+    monkeypatch.setattr('autoskyplay.ui.netease.QFileDialog.getOpenFileName',
+                        lambda *args: uploads.append(True) or ('', ''))
+    editor = EditorDialog(window, score)
+    qtbot.addWidget(editor)
+    dialog = NeteaseSongDialog(editor, picker=picker)
+    qtbot.addWidget(dialog)
+    # Immediate completion exposes a double dispatch via returnPressed plus
+    # QDialog's default button, instead of hiding it behind the busy guard.
+    monkeypatch.setattr(dialog, 'job', lambda work, result, *args, **kwargs: result(work()))
+    dialog.show()
+    dialog.input.setFocus()
+    qtbot.keyClick(dialog.input, key)  # Empty input must not fall through to upload.
+    dialog.input.setText('Summer')
+    for count in (1, 2):
+        qtbot.keyClick(dialog.input, key)
+        assert searches == ['Summer']*count
+        assert dialog.isVisible() and dialog.selection is None
+    assert not uploads and not logins and not details
+    dialog.close()
+    editor.close()
+    window.close()
+
+
 def test_netease_empty_results_failure_and_manual_fallback(qtbot, tmp_path, monkeypatch):
     from autoskyplay.netease import NeteaseError
     from autoskyplay.ui.netease import NeteaseSongDialog
@@ -441,6 +474,7 @@ def test_netease_qr_login_updates_home_and_stops_polling(qtbot, tmp_path, monkey
     lookup.login()
     monkeypatch.setattr(window.netease_client, "detail", detail)
     monkeypatch.setattr(window.netease_client, "cover", lambda song: cover_bytes())
+    lookup.mode.setCurrentIndex(0)
     lookup.input.setText("186016")
     lookup.lookup()
     qtbot.waitUntil(lambda: lookup.selection is not None)

@@ -11,7 +11,7 @@ import numpy as np
 
 from .local import MidiResult
 from .melody import MelodyNote, to_score
-from .performance import generation_mode, sparse_accompaniment
+from .performance import generation_mode, sparse_accompaniment, sparse_chords
 from .register import phrase_shift
 from .segmentation import runs
 
@@ -82,6 +82,8 @@ def chord_from_chroma(chroma):
 
 def arrange(result, threshold=.35, minimum=80, mode='simple', ornaments='simplify', overrides=()):
     from .events import EventResult, arrange_events
+    if mode == 'chords':
+        mode = 'simple'  # Raw source candidates; voicing happens only after Sky mapping.
     if mode not in ('melody', 'simple'):
         raise ValueError('生成模式无效')
     if isinstance(result, EventResult):
@@ -224,16 +226,16 @@ def constrain_score(score, instrument='Piano'):
     for first, second in zip(melody[:-1], melody[1:]):
         if not first.extra.get('source', '').startswith('midi') and first.time_ms < second.time_ms:
             first.duration_ms = min(first.duration_ms, second.time_ms - first.time_ms)
-    return sparse_accompaniment(score, instrument)
+    return (sparse_chords if score.root['transcription'].get('mode') == 'chords' else sparse_accompaniment)(score, instrument)
 
 
 def build_score(result, name, *, threshold=.35, minimum=80, mode='auto', ornaments='simplify',
                 overrides=(), bpm=None, shift=None, quantize=0, grid_offset_ms=0, rhythm='gentle',
-                use_detected_beats=True, author='', instrument='Piano'):
+                use_detected_beats=True, author='', instrument='Piano', key_anchors=None):
     from .events import EventResult
     requested_mode = mode
     mode = generation_mode(mode, instrument)
-    notes, info = arrange(result, threshold, minimum, mode, ornaments, overrides)
+    notes, info = arrange(result, threshold, minimum, 'simple' if mode == 'chords' else mode, ornaments, overrides)
     if shift is None:
         shift = phrase_shift(notes)
     analysis = getattr(result, 'analysis', {})
@@ -249,7 +251,7 @@ def build_score(result, name, *, threshold=.35, minimum=80, mode='auto', ornamen
     score, stats = to_score(notes, name, bpm or result.bpm, shift, quantize, metadata, author, grid_offset_ms,
                             beats=analysis.get('beats_ms', ()) if use_detected_beats else (), rhythm=rhythm,
                             beat_confidence=float(analysis.get('beat_confidence', 0)) if use_detected_beats else 0,
-                            allow_empty=True)
+                            allow_empty=True, key_anchors=key_anchors)
     # Snapping must not move notes into deliberately empty/uncertain regions.
     if not isinstance(result, MidiResult):
         retained = []
@@ -270,7 +272,7 @@ def build_score(result, name, *, threshold=.35, minimum=80, mode='auto', ornamen
     score.root['transcription']['mapping_review'] = [
         dict(start_ms=n.time_ms, end_ms=n.time_ms + n.duration_ms, reason=n.extra['mappingReview'])
         for n in score.notes if n.extra.get('mappingReview')]
-    if mode == 'simple' and not any(n.extra.get('role') == 'accompaniment' for n in score.notes):
+    if mode in ('simple', 'chords') and not any(n.extra.get('role') == 'accompaniment' for n in score.notes):
         score.root['transcription']['warnings'].append('未获得符合稀疏编配要求的伴奏（证据、音域或叠响限制），已保留主旋律。')
     stats.update(semitones=sum(n.extra.get('approximated', False) for n in score.notes),
                  folded=sum(n.extra.get('folded', False) for n in score.notes),

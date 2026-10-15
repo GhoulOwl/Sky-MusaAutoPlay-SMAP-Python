@@ -108,7 +108,7 @@ class TranscriptionDialog(ServiceDialog):
         root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(10)
         header = QHBoxLayout()
-        header.addWidget(label("在线扒谱", "heading"))
+        header.addWidget(label(style.tr("transcribe"), "heading"))
         header.addStretch()
         self.account = label("", "muted")
         self.login = QPushButton("网易云登录")
@@ -121,7 +121,7 @@ class TranscriptionDialog(ServiceDialog):
         header.addWidget(self.engine_status)
         header.addWidget(self.install_button)
         root.addLayout(header)
-        self.description = label("钢琴默认主旋律＋稀疏单音伴奏，小提琴默认主旋律；不确定段落保留休止并标记。", "muted")
+        self.description = label("钢琴默认主旋律＋稀疏和弦，小提琴默认主旋律；不确定段落保留休止并标记。", "muted")
         root.addWidget(self.description)
         host.netease_auth_changed.connect(self.update_account)
         song_row = QHBoxLayout()
@@ -231,6 +231,10 @@ class TranscriptionDialog(ServiceDialog):
         self.apply_source.clicked.connect(self.section_source_menu)
         layers.addWidget(self.apply_source)
         central.addLayout(layers)
+        self.refine_button = QPushButton('小节／片段精修…')
+        self.refine_button.setToolTip('仅支持 MuScriptor 原混音草稿；生成候选后对照试听，接受为新版本。')
+        self.refine_button.clicked.connect(self.refine_region)
+        toolbar.addWidget(self.refine_button)
         roll_row = QHBoxLayout()
         self.roll = PreviewRoll()
         self.roll.seek_requested.connect(self.roll_seek)
@@ -311,8 +315,9 @@ class TranscriptionDialog(ServiceDialog):
         self.generation_mode = QComboBox()
         self.generation_mode.addItem('按音色推荐', 'auto')
         self.generation_mode.addItem('主旋律＋稀疏单音伴奏', 'simple')
+        self.generation_mode.addItem('钢琴主旋律＋稀疏和弦', 'chords')
         self.generation_mode.addItem('仅完整主旋律', 'melody')
-        self.generation_mode.setToolTip('推荐：钢琴含稀疏伴奏，小提琴仅主旋律；可手动选择含伴奏。声部勾选只控制显示与试听。')
+        self.generation_mode.setToolTip('推荐：钢琴主旋律＋稀疏和弦，小提琴仅主旋律；仍可手动选择单音伴奏。声部勾选只控制显示与试听。')
         form.addRow('生成模式', self.generation_mode)
         self.rhythm_mode = QComboBox()
         for title, value in (('轻度整理（可靠拍点）', 'gentle'), ('原始时序', 'original'), ('严格对齐', 'strict')):
@@ -501,6 +506,11 @@ class TranscriptionDialog(ServiceDialog):
         self.update_account()
 
     def update_output(self):
+        from ..transcription.refinement import eligible
+        self.generation_mode.model().item(self.generation_mode.findData('chords')).setEnabled(
+            self.instrument.currentData() == 'Piano')
+        self.refine_button.setEnabled(not self.busy and eligible(self.result) and self.score is not None
+                                      and self.source_dir is not None and (self.source_dir/'source.audio').exists())
         for widget in (self.edit, self.save):
             widget.setEnabled(not self.busy and self.score is not None)
         self.midi.setEnabled(not self.busy and self.result is not None)
@@ -1320,6 +1330,11 @@ class TranscriptionDialog(ServiceDialog):
         if self.restoring:
             return
         self.stop_preview()
+        if self.generation_mode.currentData() == 'chords' and self.instrument.currentData() != 'Piano' and not self.edited:
+            self.generation_mode.blockSignals(True)
+            self.generation_mode.setCurrentIndex(self.generation_mode.findData('auto'))
+            self.generation_mode.blockSignals(False)
+        self.update_output()
         # Merely auditioning another timbre must never destroy an edited score.
         # An explicit generation-mode change forks the durable edited version.
         if self.edited:
@@ -1471,6 +1486,21 @@ class TranscriptionDialog(ServiceDialog):
             self.status.setText('编辑已回写草稿，可保存到曲库。')
             self.update_output()
 
+    def refine_region(self):
+        self.flush_remap()
+        if not self.persist_draft():
+            return
+        self.stop_preview()
+        from .refinement import RefinementDialog
+        dialog = RefinementDialog(self)
+        dialog.exec()
+        if dialog.child_id:
+            self.refresh_history()
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, dialog.child_id)
+            self.open_draft(item)
+            self.status.setText('已接受精修并另存新版本；原草稿完整保留。')
+
     def save_score(self):
         self.flush_remap()
         if not self.score:
@@ -1495,7 +1525,9 @@ class TranscriptionDialog(ServiceDialog):
             try:
                 if isinstance(self.result, EventResult):
                     self.result.export_midi(Path(path))
-                    self.status.setText('原始多轨 MIDI 已导出（模型音符事件，固定力度；不含光遇映射）')
+                    self.status.setText('复合多轨 MIDI 已导出（原稿＋已接受局部事件；不含光遇映射）'
+                                        if self.result.metadata.get('refinement') else
+                                        '原始多轨 MIDI 已导出（模型音符事件，固定力度；不含光遇映射）')
                     return
                 if isinstance(self.result, MidiResult):
                     notes = self.result.notes()

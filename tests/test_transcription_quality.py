@@ -67,7 +67,7 @@ def test_intro_solo_and_uncertainty_never_filled():
 def test_sparse_accompaniment_has_evidence_and_never_hides_melody():
     result = layered_result()
     melody, _ = build_score(result, 'Reference', mode='melody', shift=0, rhythm='original')
-    full, stats = build_score(result, 'Reference', shift=0, rhythm='original')
+    full, stats = build_score(result, 'Reference', mode='simple', shift=0, rhythm='original')
     lead = [n for n in full.notes if n.extra['role'] == 'melody']
     assert [(n.key, n.time_ms) for n in lead] == [(n.key, n.time_ms) for n in melody.notes]
     assert stats['accompaniment'] > 0

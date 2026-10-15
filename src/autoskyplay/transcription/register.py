@@ -21,7 +21,7 @@ def melody_phrases(notes):
     return phrases
 
 
-def melody_keys(notes, shift, *, with_cost=False):
+def melody_keys(notes, shift, *, with_cost=False, anchors=None):
     """Preserve phrase contour before proximity to an unreachable raw octave.
 
     All source notes remain. Repeated complete pitch sequences reuse one key
@@ -35,7 +35,7 @@ def melody_keys(notes, shift, *, with_cost=False):
         costs, parents = [], []
         previous_raw = None
         signature = (phrase[0][1].source, tuple(n.pitch for _, n in phrase))
-        repeat = repeated.get(signature) if len(phrase) >= 4 else None
+        repeat = repeated.get(signature) if len(phrase) >= 4 and not anchors else None
         for _, note in phrase:
             raw = note.pitch + shift
             pcs = {raw % 12} if raw % 12 in WHITE else {(raw - 1) % 12, (raw + 1) % 12}
@@ -43,6 +43,9 @@ def melody_keys(notes, shift, *, with_cost=False):
             local = abs(pitches - raw) * .04 * weight
             local += abs(pitches - 72) * .025  # room around both ends of the keyboard
             local = np.where(np.isin(pitches % 12, list(pcs)), local, 1e9)
+            anchor = (anchors or {}).get((note.start_ms, note.pitch, note.instrument))
+            if anchor is not None:
+                local = np.where(np.arange(15) == anchor, 0., 1e12)
             if repeat is not None:
                 local = np.where(np.arange(15) == repeat[len(costs)], local, 1e9)
             if previous_raw is None:

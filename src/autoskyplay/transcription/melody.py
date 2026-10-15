@@ -138,7 +138,7 @@ def suggest_shift(notes: list[MelodyNote]) -> int:
 
 def to_score(notes: list[MelodyNote], name: str, bpm=120, shift=None, quantize=0,
              metadata=None, author="", grid_offset_ms=0, *, beats=(), rhythm="strict",
-             beat_confidence=0, allow_empty=False) -> tuple[Score, dict]:
+             beat_confidence=0, allow_empty=False, key_anchors=None) -> tuple[Score, dict]:
     if not notes and not allow_empty:
         raise ScoreError("未识别到可用旋律，请选择其他片段或检查待修正标记")
     if not math.isfinite(bpm) or not 1 <= bpm <= 2000:
@@ -152,7 +152,7 @@ def to_score(notes: list[MelodyNote], name: str, bpm=120, shift=None, quantize=0
         raise ScoreError('节奏整理模式无效')
     from .register import melody_keys
     from .rhythm import snap_interval
-    mapped = melody_keys(notes, shift)
+    mapped = melody_keys(notes, shift, anchors=key_anchors)
     converted = []
     black = folded = 0
     previous = None

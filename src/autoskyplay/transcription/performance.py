@@ -13,9 +13,100 @@ from ..midi import SKY_MIDI
 
 
 def generation_mode(mode, instrument):
-    if instrument not in INSTRUMENTS or mode not in ('auto', 'simple', 'melody'):
+    if instrument not in INSTRUMENTS or mode not in ('auto', 'simple', 'melody', 'chords'):
         raise ValueError('生成模式或音色无效')
-    return ('melody' if instrument == 'Violin' else 'simple') if mode == 'auto' else mode
+    if mode == 'chords' and instrument != 'Piano':
+        mode = 'auto'  # Two-tone voicing is calibrated only for the bundled piano samples.
+    return ('melody' if instrument == 'Violin' else 'chords' if instrument == 'Piano' else 'simple') if mode == 'auto' else mode
+
+
+def sparse_chords(score, instrument):
+    """Up to two source-backed support tones, with whole-chord tail spacing.
+
+    The lead is immutable. A dyad is accepted only if both voices fit the
+    sounding lead and an ordinary major/minor triad; uncertain evidence falls
+    back to a single tone. There are no generated pitches or volume tricks.
+    """
+    from itertools import combinations
+
+    meta = score.root['transcription']
+    lead = sorted((n for n in score.notes if n.extra.get('role') != 'accompaniment'), key=lambda n: n.time_ms)
+    support = sorted((n for n in score.notes if n.extra.get('role') == 'accompaniment'
+                      and not n.extra.get('generated') and n.duration_ms >= max(80, meta.get('minimum_ms', 80))),
+                     key=lambda n: (n.time_ms, n.key))
+    groups = []
+    for n in support:
+        if groups and n.time_ms - groups[-1][0].time_ms <= 40:
+            groups[-1].append(n)
+        else:
+            groups.append([n])
+    beats = meta.get('beats_ms', [])
+    beat = float(np.median(np.diff(beats))) if len(beats) >= 4 else 60000 / score.bpm
+    tails = piano_tails() if instrument == 'Piano' else (0,) * 15
+    strong = piano_tails(-18) if instrument == 'Piano' else (0,) * 15
+    triads = [{r, (r+t) % 12, (r+7) % 12} for r in range(12) for t in (3, 4)]
+    kept, rejected, sounding_until, last_start, last_pcs = [], Counter(), -1., -1e9, set()
+    dyads = 0
+    for group in groups:
+        start = max(n.time_ms for n in group)
+        if start < sounding_until or start - last_start < 2 * beat:
+            rejected['tail_or_spacing'] += len(group)
+            continue
+        if sum(start-.25*beat <= n.time_ms < start+1.75*beat for n in lead) >= 5:
+            rejected['busy_melody'] += len(group)
+            continue
+        options = []
+        for n in group:
+            duration = n.time_ms + n.duration_ms - start
+            if duration < max(80, meta.get('minimum_ms', 80)):
+                continue
+            pc = (n.extra['sourcePitch'] + meta['shift']) % 12
+            for key, pitch in enumerate(SKY_MIDI):
+                if pitch % 12 != pc:
+                    continue
+                end = start + max(strong[key], duration if instrument != 'Piano' else 0)
+                active = [m for m in lead if m.time_ms < end and m.time_ms+m.duration_ms > start]
+                if not active or any(SKY_MIDI[m.key]-pitch < 3 or
+                                     (SKY_MIDI[m.key]-pitch) % 12 in (0, 1, 2, 6, 10, 11) for m in active):
+                    continue
+                if any(s['source'] in ('rest', 'uncertain') and s['start_ms'] < start+duration and s['end_ms'] > start
+                       for s in meta.get('sections', [])):
+                    continue
+                options.append((n, key, duration, {SKY_MIDI[m.key] % 12 for m in active}))
+        choices = []
+        for a, b in combinations(options, 2):
+            if a[0] is b[0] or SKY_MIDI[a[1]] % 12 == SKY_MIDI[b[1]] % 12:
+                continue
+            pcs = {SKY_MIDI[a[1]] % 12, SKY_MIDI[b[1]] % 12}
+            if abs(SKY_MIDI[a[1]]-SKY_MIDI[b[1]]) > 12:
+                continue
+            if not all(any(pcs | {p} <= triad for triad in triads) for p in a[3] | b[3]):
+                continue
+            choices.append((2, -abs(a[1]-b[1]), a[1]+b[1], [a, b]))
+        choices.extend((1, 0, a[1], [a]) for a in options)
+        if not choices:
+            rejected['range_or_harmony'] += len(group)
+            continue
+        chosen = max(choices, key=lambda c: c[:3])[3]
+        pcs = {SKY_MIDI[a[1]] % 12 for a in chosen}
+        if pcs == last_pcs and start - last_start < 4 * beat:
+            rejected['repeated_chord'] += len(group)
+            continue
+        # Remap only after selection; the original model timing remains in extra.
+        for n, key, duration, _ in chosen:
+            n.time_ms, n.key, n.duration_ms = start, key, duration
+            n.extra.update(chordSupport=True, chordSize=len(chosen),
+                           folded=SKY_MIDI[key] != n.extra['sourcePitch']+meta['shift'], approximated=False,
+                           audibleDuration=max(tails[key], duration + (34 if instrument != 'Piano' else 0)))
+            kept.append(n)
+        sounding_until = max(n.time_ms+n.extra['audibleDuration'] for n, *_ in chosen)
+        last_start, last_pcs = start, pcs
+        dyads += len(chosen) == 2
+    score.notes = sorted(lead + kept, key=lambda n: (n.time_ms, n.key))
+    meta['clarity'] = dict(instrument=instrument, maximum_accompaniment=2, candidates=len(support),
+                           kept=len(kept), dyads=dyads, rejected=dict(rejected), tail_threshold_db=-40,
+                           harmony_threshold_db=-18, policy='source-backed-sparse-chords-v1')
+    return score
 
 
 @lru_cache(maxsize=4)

@@ -101,7 +101,8 @@ def run(args):
     # Background events use the task's one original/drums beat reference later.
     # Their recognition cache is independent of rhythm/arrangement settings.
     bpm, valid, confidence, beats = 120., False, 0., np.array([])
-    if input_source == 'original':
+    frozen_rhythm = request.get('rhythm_reference')
+    if input_source == 'original' and frozen_rhythm is None:
         # Signal-only tempo estimation. No beat_this/MuseScore/soundfont model downloads.
         import librosa
         onset = librosa.onset.onset_strength(y=audio, sr=sr, hop_length=512)
@@ -116,12 +117,18 @@ def run(args):
             regularity = max(0, 1-np.std(differences)/np.mean(differences)*3)
             support = min(1, np.mean(onset[frames])/max(1e-8, float(np.percentile(onset, 90))))
             confidence = float(regularity*support)
+    elif frozen_rhythm is not None:
+        bpm = float(frozen_rhythm['bpm'])
+        beats = np.asarray(frozen_rhythm['beats_ms'], dtype=float)
+        confidence = float(frozen_rhythm['beat_confidence'])
+        valid = bool(frozen_rhythm.get('bpm_estimated', True))
     energy = [float(20*np.log10(max(1e-8, np.sqrt(np.mean(audio[i:i+1600]**2)))))
               for i in range(0, len(audio), 1600)]
     metadata = dict(engine='muscriptor-2.0.0', runtime_revision=RUNTIME_REVISION, model=args.model,
                     audio_source=input_source, input_origin_seconds=request.get('input_origin_seconds', start),
                     input_scale=request.get('input_scale', 1),
-                    rhythm_reference='self' if input_source == 'original' else 'shared-original-drums',
+                    rhythm_reference='frozen-draft' if frozen_rhythm is not None else
+                                     'self' if input_source == 'original' else 'shared-original-drums',
                     preprocessing=preprocessing,
                     model_repository=f'MuScriptor/muscriptor-{args.model}', model_source='modelscope.cn',
                     model_revision=MODELS[args.model]['revision'],

@@ -1,6 +1,7 @@
 """Build on the target OS: uv run python scripts/build.py [--installer]."""
 
 import argparse
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,12 @@ def main():
         resources = ROOT / "dist/AutoSkyPlay.app/Contents/Resources"
         shutil.copy(ROOT / "LICENSE", resources / "LICENSE")
         shutil.copy(ROOT / "THIRD_PARTY_NOTICES.md", resources / "THIRD_PARTY_NOTICES.md")
+        info_path = resources.parent / "Info.plist"
+        with info_path.open("rb") as stream:
+            info = plistlib.load(stream)
+        info.update(CFBundleShortVersionString=__version__, CFBundleVersion=__version__)
+        with info_path.open("wb") as stream:
+            plistlib.dump(info, stream)
         # Resource additions invalidate PyInstaller's initial ad-hoc signature.
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-",
                         str(ROOT / "dist/AutoSkyPlay.app")], check=True)

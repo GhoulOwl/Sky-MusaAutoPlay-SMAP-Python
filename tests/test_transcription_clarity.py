@@ -20,10 +20,10 @@ def identity(score):
             for n in score.notes if n.extra['role'] == 'melody']
 
 
-def test_instrument_defaults_and_explicit_accompaniment_keep_same_lead():
+def test_violin_default_and_explicit_single_accompaniment_keep_same_lead():
     result = layered_result()
     original = result.frequency.copy()
-    piano, _ = build_score(result, 'Piano')
+    piano, _ = build_score(result, 'Piano', mode='simple')
     violin, _ = build_score(result, 'Violin', instrument='Violin')
     optional, _ = build_score(result, 'Violin+', instrument='Violin', mode='simple')
     assert identity(piano) == identity(violin) == identity(optional)

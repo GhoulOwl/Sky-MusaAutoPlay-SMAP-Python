@@ -40,7 +40,7 @@ def stop_process(process):
 
 
 class TranscriptionTask:
-    def __init__(self, directory, client, song, audio, engine, start, length, source=None, source_kind="netease", source_name=""):
+    def __init__(self, directory, client, song, audio, engine, start, length, source=None, source_kind="netease", source_name="", rhythm_reference=None):
         origin = audio.trial_start or 0
         available = audio.available_seconds
         if (not 0 <= start - origin or not 0 < length <= 600
@@ -51,6 +51,7 @@ class TranscriptionTask:
         self.directory = Path(directory)
         self.source_kind, self.source_name = source_kind, source_name
         self.source = Path(source) if source else None
+        self.rhythm_reference = rhythm_reference
         self.start_seconds, self.length_seconds = start, length
         self.cancelled = threading.Event()
         self.disposed = threading.Event()
@@ -122,6 +123,7 @@ class TranscriptionTask:
             self.check_cancelled()
             atomic_json(self.work / "request.json", {
                 "start": self.start_seconds - (self.audio.trial_start or 0), "length": self.length_seconds,
+                **({'rhythm_reference': self.rhythm_reference} if self.rhythm_reference is not None else {}),
             })
             backend = getattr(self.engine, 'backend', 'legacy')
             native = backend in ('muscriptor', 'hybrid')
@@ -168,6 +170,7 @@ class TranscriptionTask:
         identity = dict(source_sha256=source_sha, model=self.engine.model,
                         model_sha256=MODELS[self.engine.model]['files']['model.safetensors'][1],
                         runtime=RUNTIME_REVISION, engine=self.engine.version, device=self.engine.device,
+                        worker_identity=self.engine.config.get('runtime_identity'),
                         request=json.loads((self.work / 'request.json').read_text()),
                         decoding='greedy-batch1-prelude-strict-v1')
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -186,6 +189,14 @@ class TranscriptionTask:
         metadata = self._run_engine()
         self.check_cancelled()
         result = EventResult.load(self.work / 'events.json', metadata)
+        if self.rhythm_reference is not None:
+            # Compatible 2.0.0 packages may ignore this optional worker request.
+            # Enforce the parent's clock here too; local analysis cannot retime it.
+            result.bpm = self.rhythm_reference['bpm']
+            result.analysis.update(beats_ms=self.rhythm_reference['beats_ms'],
+                                   beat_confidence=self.rhythm_reference['beat_confidence'])
+            result.metadata.update(rhythm_reference='frozen-draft',
+                                   bpm_estimated=self.rhythm_reference.get('bpm_estimated', True))
         result.metadata.update(source_sha256=source_sha, cache_identity=identity, cache_hit=False)
         cache.parent.mkdir(parents=True, exist_ok=True)
         result.save(cache)

@@ -109,7 +109,8 @@ def find_engine(directory: Path, backend='legacy') -> Engine | None:
                               runtime_identity=metadata['files'][metadata['entry']],
                               separation_models=str(root/'models'), background_mix='with_drums', game_device='cpu'))
             return Engine([str(executable)], (directory / 'transcription/models').resolve()
-                          if backend == 'muscriptor' else root / 'models', metadata['version'], backend)
+                          if backend == 'muscriptor' else root / 'models', metadata['version'], backend,
+                          config=dict(runtime_identity=metadata['files'][metadata['entry']]))
         except (OSError, KeyError, TypeError, ValueError):
             raise ValueError("已安装的扒谱组件损坏或版本不匹配，请重新导入组件包") from None
     if not getattr(sys, "frozen", False):
@@ -120,7 +121,9 @@ def find_engine(directory: Path, backend='legacy') -> Engine | None:
             python = root / 'build/muscriptor-venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
             if python.is_file() and (root / 'build/muscriptor-venv/runtime.json').is_file():
                 return Engine([str(python), str(Path(__file__).with_name('muscriptor_worker.py'))],
-                              (directory / 'transcription/models').resolve(), MUSCRIPTOR_VERSION, backend)
+                              (directory / 'transcription/models').resolve(), MUSCRIPTOR_VERSION, backend,
+                              config=dict(runtime_identity=hashlib.sha256(
+                                  Path(__file__).with_name('muscriptor_worker.py').read_bytes()).hexdigest()))
             return None
         python = root / ".transcription-venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         models = root / "build/transcription-models"
