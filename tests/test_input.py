@@ -39,3 +39,35 @@ def test_scan_code_chord_is_sent_together_and_released():
     output.silence()
     assert all(flags == 10 for vk, scan, flags in output.user32.calls[1])
     assert not output.pending
+
+
+def test_duration_mode_releases_and_retriggers_without_stuck_keys(monkeypatch):
+    now = [10.]
+    monkeypatch.setattr('autoskyplay.input.time.monotonic', lambda: now[0])
+    output = WindowsOutput.__new__(WindowsOutput)
+    output.pending, output.hold_ms, output.sustain = {}, 25, True
+    calls = []
+    output._send = lambda keys, up: calls.append((list(keys), up))
+    output.trigger((0, 4), (800, 200))
+    assert output.pending == {0: 10.8, 4: 10.2}
+    now[0] = 10.3
+    output.pump()
+    assert calls[-1] == ([4], True) and 0 in output.pending
+    output.trigger((0,), (100,))
+    assert calls[-2:] == [([0], True), ([0], False)]
+    now[0] = 10.5
+    output.pump()
+    assert not output.pending
+
+
+def test_seek_restore_requires_explicit_game_sustain_mode(monkeypatch):
+    monkeypatch.setattr('autoskyplay.input.time.monotonic', lambda: 10.)
+    output = WindowsOutput.__new__(WindowsOutput)
+    output.pending, output.hold_ms, output.sustain = {}, 25, False
+    calls = []
+    output._send = lambda keys, up: calls.append((list(keys), up))
+    output.restore((0,), (750,))
+    assert not calls and not output.pending
+    output.sustain = True
+    output.restore((0,), (750,))
+    assert output.pending == {0: 10.75}

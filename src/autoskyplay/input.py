@@ -68,12 +68,13 @@ class Input(ctypes.Structure):
 
 
 class WindowsOutput:
-    def __init__(self, keys: list[str], hold_ms: int = 25):
+    def __init__(self, keys: list[str], hold_ms: int = 25, sustain: bool = False):
         if sys.platform != "win32":
             raise RuntimeError("游戏演奏目前仅支持 Windows；当前平台可以试听、编辑和练习")
         validate_keys(keys)
         self.vks = [virtual_key(k) for k in keys]
         self.hold_ms = max(10, min(500, hold_ms))
+        self.sustain = sustain
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
         self.user32.SendInput.restype = wintypes.UINT
@@ -101,9 +102,16 @@ class WindowsOutput:
         repeated = [k for k in keys if k in self.pending]
         self._send(repeated, True)
         # Track before injection so a partial SendInput failure is cleaned up too.
-        for key in keys:
-            self.pending[key] = time.monotonic() + self.hold_ms / 1000
+        now = time.monotonic()
+        for i, key in enumerate(keys):
+            duration = durations[i] if i < len(durations) else self.hold_ms
+            hold = max(10, min(600000, duration)) if getattr(self, 'sustain', False) else self.hold_ms
+            self.pending[key] = now + hold / 1000
         self._send(list(keys), False)
+
+    def restore(self, keys: tuple[int, ...], durations: tuple[float, ...]):
+        if self.sustain:
+            self.trigger(keys, durations)
 
     def pump(self):
         expired = [k for k, deadline in self.pending.items() if deadline <= time.monotonic()]

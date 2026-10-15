@@ -6,6 +6,7 @@ import bisect
 import random
 import threading
 import time
+from dataclasses import replace
 from enum import Enum
 
 from .score import Score
@@ -32,6 +33,21 @@ class Timeline:
     def seek(self, position_ms: float):
         self.position_ms = min(self.duration_ms, max(0, position_ms))
         self.index = bisect.bisect_left(self.times, self.position_ms)
+
+    def sustaining(self):
+        """Latest articulation per key, with only its remaining song-clock time."""
+        position = self.position_ms
+        end = bisect.bisect_right(self.times, position)
+        seen, active = set(), []
+        for note in reversed(self.notes[:end]):
+            if note.key in seen:
+                continue
+            seen.add(note.key)
+            remaining = note.time_ms + note.duration_ms - position
+            # Notes exactly at the cursor are emitted by advance(), only once.
+            if note.time_ms < position and remaining > 0:
+                active.append(replace(note, time_ms=position, duration_ms=remaining))
+        return sorted(active, key=lambda n: n.key)
 
     def advance(self, delta_ms: float, speed: float):
         self.position_ms = min(self.duration_ms, self.position_ms + max(0, delta_ms) * speed)
@@ -61,6 +77,7 @@ class Player:
         self._cancel = False
         self._output = None
         self._silence_requested = False
+        self._restore_requested = False
 
     @property
     def position_ms(self):
@@ -85,6 +102,8 @@ class Player:
                 self.timeline.seek(0)
             self._cancel = False
             self._output = output
+            self._silence_requested = False
+            self._restore_requested = True
             self.countdown = max(0, countdown)
             self.state = State.PLAYING
             self._thread = threading.Thread(target=self._run, name="score-playback", daemon=True)
@@ -94,8 +113,11 @@ class Player:
         with self._condition:
             if self.state not in (State.PLAYING, State.PAUSED):
                 return
+            if (self.state == State.PAUSED) == paused:
+                return
             self.state = State.PAUSED if paused else State.PLAYING
-            self._silence_requested = paused
+            self._silence_requested = True
+            self._restore_requested = True
             self._condition.notify_all()
 
     def seek(self, position_ms: float):
@@ -103,6 +125,7 @@ class Player:
             if self.timeline:
                 self.timeline.seek(position_ms)
             self._silence_requested = True
+            self._restore_requested = True
             self._condition.notify_all()
 
     def set_speed(self, speed: float):
@@ -145,6 +168,14 @@ class Player:
                             self.countdown = max(0, self.countdown - delta / 1000)
                             delta = 0
                         else:
+                            if self._restore_requested:
+                                self._restore_requested = False
+                                active = self.timeline.sustaining()
+                                restore = getattr(self._output, 'restore', None)
+                                if active and restore is not None:
+                                    restore(tuple(n.key for n in active),
+                                            tuple(n.duration_ms / self.speed for n in active))
+                                delta = 0
                             groups = self.timeline.advance(delta, self.speed)
                             for group in groups:
                                 keys = tuple(n.key for n in group)

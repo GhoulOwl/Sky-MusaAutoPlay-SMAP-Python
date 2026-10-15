@@ -14,10 +14,11 @@ import numpy as np
 
 from ..netease import NeteaseSong
 from ..score import atomic_json, parse_score
+from .events import EventResult
 from .local import MidiResult
 from .melody import MelodyNote, PitchResult
 
-AUDIO_FILES = ('original.wav', 'vocals.wav')
+AUDIO_FILES = ('original.wav', 'vocals.wav', 'other.wav', 'bass.wav', 'drums.wav', 'background.wav')
 
 
 class DraftStore:
@@ -46,15 +47,16 @@ class DraftStore:
         directory = self.path(ident)
         directory.mkdir(exist_ok=True)
         pitch = directory / 'pitch.npz'
-        if isinstance(result, MidiResult):
+        if isinstance(result, EventResult):
+            result.save(directory / 'events.json')
+        elif isinstance(result, MidiResult):
             atomic_json(directory / 'midi-notes.json', dict(notes=[asdict(n) for n in result.raw_notes],
                                                           duration_ms=result.duration_ms, bpm=result.bpm))
         elif not pitch.exists():
             temporary = directory / 'pitch.tmp.npz'
-            np.savez_compressed(temporary, **{k: getattr(result, k) for k in
-                                ('frequency', 'confidence', 'energy_db', 'onset', 'hop_ms', 'duration_ms', 'bpm')})
+            np.savez_compressed(temporary, **result.arrays())
             os.replace(temporary, pitch)
-        for origin, names in ((media, ('original.wav', 'vocals.wav', 'source.audio')), (source, ('source.audio', 'source.mid', 'waveform.json'))):
+        for origin, names in ((media, (*AUDIO_FILES, 'source.audio')), (source, ('source.audio', 'source.mid', 'waveform.json'))):
             if origin:
                 for name in names:
                     src, dst = Path(origin) / name, directory / name
@@ -79,7 +81,7 @@ class DraftStore:
         old = {}
         if (directory / 'draft.json').exists():
             old = json.loads((directory / 'draft.json').read_text('utf-8'))
-        data = dict(schema=1, result_type='midi' if isinstance(result, MidiResult) else 'audio',
+        data = dict(schema=1, result_type='events' if isinstance(result, EventResult) else 'midi' if isinstance(result, MidiResult) else 'audio',
                     title=title or old.get('title', score.name if score else song.name), id=ident, updated=time.time(), song=asdict(song), metadata=result.metadata,
                     params=params, edited=edited, saved=saved, score=score.to_data() if score else None)
         atomic_json(directory / 'draft.json', data)
@@ -90,12 +92,16 @@ class DraftStore:
         data = json.loads((directory / 'draft.json').read_text('utf-8'))
         if data.get('schema') != 1:
             raise ValueError('草稿版本不支持')
-        if data.get('result_type') == 'midi':
+        if data.get('result_type') == 'events':
+            result = EventResult.load(directory / 'events.json', data['metadata'])
+        elif data.get('result_type') == 'midi':
             raw = json.loads((directory / 'midi-notes.json').read_text('utf-8'))
             result = MidiResult([MelodyNote(**note) for note in raw['notes']],
                                 raw['duration_ms'], raw['bpm'], data['metadata'])
         else:
             result = PitchResult.load(directory / 'pitch.npz', data['metadata'])
+            from .boundaries import enrich_boundaries
+            enrich_boundaries(result, directory, cache=True)
         score = parse_score(json.dumps(data['score'])) if data['score'] else None
         # Touch the access time used for LRU audio eviction, not the visible edit date.
         (directory / 'draft.json').touch()

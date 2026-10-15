@@ -35,8 +35,10 @@ uv run autoskyplay
 
 主页「在线扒谱」支持网易云搜索与链接 / ID 选歌、真实波形选段，在本机识别人声主旋律，
 试听并生成可编辑的光遇曲谱或 MIDI。支持整首与指定片段，试听音频会明确标注。
-首次使用需导入对应平台的离线扒谱组件包；源码运行可先执行
-`uv run python scripts/prepare_transcription.py`。工作台支持历史草稿自动保存、只读卷帘预览、
+默认使用 MuScriptor small，medium 可选。首次导入 MuScriptor 2.0.0 运行组件，
+再在「设置 → 扒谱模型管理」从 ModelScope 下载模型；支持取消续传和本地导入。
+源码运行先执行 `PYTHONPATH=src uv run python scripts/prepare_muscriptor.py`。
+模型权重长期保留（CC BY-NC 4.0，限非商业使用）。工作台支持历史草稿自动保存、只读卷帘预览、
 独立音色试听和编辑回写；显示网格与节拍吸附分开设置。网易云下载缓存保留 7 天，
 可在主页面设置中清理；草稿源文件长期保留。选择歌曲窗口支持本地音频 / MIDI，右键草稿可重命名或删除。流程与组件构建见 [在线扒谱说明](docs/TRANSCRIPTION.md)。
 
@@ -108,3 +110,12 @@ uv run python scripts/build.py --installer
 `audio` 混音、`practice` 和弦判定、`storage` 持久化、`cloud` 在线协议、`ui` 桌面界面。
 
 GPL-3.0。原项目和复用资产来源见 [第三方说明](THIRD_PARTY_NOTICES.md)。
+
+扒谱效果升级支持完整主旋律、器乐段落、简洁伴奏和待修正标记，使用 1.1.0 离线组件。详见 [效果与验证说明](docs/TRANSCRIPTION_QUALITY.md)。
+
+P1 → P2 清晰度优化已实现钢琴稀疏单音伴奏、小提琴默认仅主旋律，以及映射待核对提示；三首歌的对照数据、试听方式和当前取舍见 [清晰度报告](docs/TRANSCRIPTION_CLARITY_REVIEW_2026-10-14.md)。
+
+延音误切修复已加入音轨连续性校验，保守保留真实重奏候选、换气与休止，不直接合并同键音符。三首歌的实际变化、保留的问题和新版试听见 [延音修复报告](docs/TRANSCRIPTION_SUSTAIN_REVIEW_2026-10-14.md)。
+
+可选「Demucs＋GAME＋MuScriptor」混合后端分别识别人声和背景，保留原始事件与来源记录，支持分层缓存、取消和独立冻结组件。
+原混音 MuScriptor small 仍为默认；安装、数据兼容和效果边界见 [扒谱使用说明](docs/TRANSCRIPTION.md)。

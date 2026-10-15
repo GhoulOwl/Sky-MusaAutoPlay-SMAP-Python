@@ -41,6 +41,27 @@ verified against the release's official SHA-256 checksum manifest.
 
 # 本地扒谱可选组件
 
+MuScriptor 2.0.0 组件使用 [MuScriptor](https://github.com/muscriptor/muscriptor) 转谱核心，
+固定代码修订 `7f213afecf23bd6a1b8672aa223690ee9807cefb`（MIT，Kyutai x Mirelo）。
+原始 MIDI 的乐器组映射依据该修订中的 `muscriptor/tokenizer/mt3.py`。
+small / medium 权重遵循 **CC BY-NC 4.0，限非商业用途**，署名 MuScriptor / Kyutai x Mirelo；
+许可证：https://creativecommons.org/licenses/by-nc/4.0/ 。
+官方来源为 https://huggingface.co/MuScriptor/muscriptor-small 和
+https://huggingface.co/MuScriptor/muscriptor-medium 。
+本项目从 ModelScope 同名社区镜像下载，固定修订和 SHA256 见
+`src/autoskyplay/transcription/models.py`，不修改权重，不宣称镜像为作者官方发布渠道。
+运行组件与权重分开管理，模型不会随 GPL 应用代码改变许可；应用的 GPL 许可不赋予模型商业使用权。
+MuScriptor 的 MIT 许可证和所用依赖许可证随独立运行组件提供。
+
+混合 3.0.0 可选组件增加 [GAME](https://github.com/openvpi/GAME)，
+固定代码修订 `f4239345f0fed21890d362c74a35fd857724aa82`（openvpi，MIT）。
+GAME 1.0 medium 权重从作者的
+[v1.0.0 发布页](https://github.com/openvpi/GAME/releases/tag/v1.0.0) 下载，
+遵循 **CC BY-NC-SA 4.0**；许可证：https://creativecommons.org/licenses/by-nc-sa/4.0/ 。
+固定发布包及内部文件 SHA256 见 `src/autoskyplay/transcription/game_models.py`。
+不修改权重。GAME 与 MuScriptor 的模型许可分别适用，不因同一组件分发而变更。
+本项目直接调用 GAME 的推理模块，不包含 Qwen、歌词 ASR 或强制对齐模型。
+
 独立 CPU 组件使用 [Demucs](https://github.com/adefossez/demucs) 4.1.0（MIT）和
 [torchcrepe](https://github.com/maxrmorrison/torchcrepe) 0.0.24（MIT），以及
 [HTDemucs 模型](https://huggingface.co/adefossez/HTDemucs)，固定修订与文件哈希见

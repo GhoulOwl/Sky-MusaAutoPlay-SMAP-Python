@@ -172,8 +172,11 @@ class PreviewRoll(PianoRoll):
             item.setFlags(QGraphicsItem.GraphicsItemFlag(0))
             note = item.note
             item.setToolTip(f'键位 {note.key + 1} · {note.time_ms / 1000:.2f} 秒 · {note.duration_ms:.0f} ms'
+                            + (' · 简化伴奏' if note.extra.get('generated') else ' · 伴奏' if note.extra.get('role') == 'accompaniment' else ' · 主旋律')
                             + (' · 半音近似' if note.extra.get('approximated') else '')
-                            + (' · 音域折叠' if note.extra.get('folded') else ''))
+                            + (' · 音域折叠' if note.extra.get('folded') else '')
+                            + (' · 待核对：' + '；'.join(note.extra['reviewReasons']) if note.extra.get('reviewReasons') else '')
+                            + (' · 待核对：' + note.extra['mappingReview'] if note.extra.get('mappingReview') else ''))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -211,6 +214,26 @@ class PreviewRoll(PianoRoll):
                 painter.fillRect(QRectF(rect.left(), row * self.row_height, rect.width(), self.row_height), QColor(c['raised']))
             painter.setPen(QColor(c['border']))
             painter.drawLine(QPointF(rect.left(), row * self.row_height), QPointF(rect.right(), row * self.row_height))
+        for section in self.score.root.get('transcription', {}).get('sections', []):
+            if section.get('needs_review'):
+                x = section['start_ms'] / self.score.ms_per_beat * self.pixels_per_beat
+                width = (section['end_ms'] - section['start_ms']) / self.score.ms_per_beat * self.pixels_per_beat
+                color = QColor('#d39942')
+                color.setAlpha(40)
+                painter.fillRect(QRectF(x, 0, width, 15 * self.row_height), color)
+        info = self.score.root.get('transcription', {})
+        beats = info.get('beats_ms', [])
+        if info.get('use_detected_beats') and info.get('beat_confidence', 0) >= .55 and len(beats) >= 4:
+            for a, b in zip(beats[:-1], beats[1:]):
+                left = (a + self.grid_offset_ms) / self.score.ms_per_beat * self.pixels_per_beat
+                right = (b + self.grid_offset_ms) / self.score.ms_per_beat * self.pixels_per_beat
+                if right < rect.left() or left > rect.right():
+                    continue
+                for i in range(self.subdivision):
+                    x = left + (right - left) * i / self.subdivision
+                    painter.setPen(QPen(QColor(c['muted'] if i == 0 else c['border']), .7))
+                    painter.drawLine(QPointF(x, 0), QPointF(x, 15 * self.row_height))
+            return
         step = self.pixels_per_beat / self.subdivision
         offset = getattr(self, 'grid_offset_ms', 0) / self.score.ms_per_beat * self.pixels_per_beat
         for i in range(int((rect.left() - offset) / step) - 1, int((rect.right() - offset) / step) + 2):

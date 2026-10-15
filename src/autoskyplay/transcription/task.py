@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -15,9 +16,10 @@ from pathlib import Path
 
 from ..score import atomic_json
 from .cache import DownloadCache
+from .events import EventResult
 from .melody import PitchResult
 
-STAGES = {"decode", "separate", "pitch", "convert", "notice", "done", "error"}
+STAGES = {"decode", "load", "separate", "pitch", "convert", "notice", "done", "error"}
 
 
 def stop_process(process):
@@ -46,6 +48,7 @@ class TranscriptionTask:
             raise ValueError("所选范围超出可用音频，或超过 10 分钟")
         self.client, self.song, self.audio, self.engine = client, song, audio, engine
         self.cache = DownloadCache(directory)
+        self.directory = Path(directory)
         self.source_kind, self.source_name = source_kind, source_name
         self.source = Path(source) if source else None
         self.start_seconds, self.length_seconds = start, length
@@ -120,14 +123,31 @@ class TranscriptionTask:
             atomic_json(self.work / "request.json", {
                 "start": self.start_seconds - (self.audio.trial_start or 0), "length": self.length_seconds,
             })
-            metadata = self._run_engine()
+            backend = getattr(self.engine, 'backend', 'legacy')
+            native = backend in ('muscriptor', 'hybrid')
+            if backend == 'hybrid':
+                from .hybrid import run_hybrid
+                self.result = run_hybrid(self)
+                metadata = self.result.metadata
+            elif native:
+                self.result = self._run_muscriptor()
+                metadata = self.result.metadata
+            else:
+                metadata = self._run_engine()
             self.check_cancelled()
             metadata.update(source=self.source_kind, source_name=self.source_name,
                             song_id=self.song.id, source_start=self.start_seconds,
                             requested_length=self.length_seconds, is_trial=self.audio.is_trial,
                             source_origin=self.audio.trial_start or 0,
                             source_duration=self.audio.available_seconds)
-            self.result = PitchResult.load(self.work / "pitch.npz", metadata)
+            if native:
+                self.result.save(self.work / 'events.json')
+            else:
+                self.result = PitchResult.load(self.work / "pitch.npz", metadata)
+                from .boundaries import enrich_boundaries
+                self.emit('convert', message='检查延音与同音重奏')
+                enrich_boundaries(self.result, self.work, cancelled=self.cancelled.is_set)
+            self.check_cancelled()
             if downloaded and self.source_kind == "netease":
                 self.cache.put(self.audio, self.work / "source.audio")
             self.emit("ready", 100, result=self.result, cover=cover)
@@ -142,9 +162,44 @@ class TranscriptionTask:
                     shutil.rmtree(self.work, ignore_errors=True)
             self.emit("finished")
 
-    def _run_engine(self):
-        command = [*self.engine.command, "--work", str(self.work), "--models", str(self.engine.models),
+    def _run_muscriptor(self):
+        from .models import MODELS, RUNTIME_REVISION, digest
+        source_sha = digest(self.work / 'source.audio', self.cancelled.is_set)
+        identity = dict(source_sha256=source_sha, model=self.engine.model,
+                        model_sha256=MODELS[self.engine.model]['files']['model.safetensors'][1],
+                        runtime=RUNTIME_REVISION, engine=self.engine.version, device=self.engine.device,
+                        request=json.loads((self.work / 'request.json').read_text()),
+                        decoding='greedy-batch1-prelude-strict-v1')
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        cache = self.directory / 'transcription' / 'results' / (key + '.json')
+        if cache.exists():
+            try:
+                result = EventResult.load(cache)
+                if result.metadata.get('cache_identity') != identity:
+                    raise ValueError('缓存版本不匹配')
+                result.metadata['cache_hit'] = True
+                result.save(self.work / 'events.json')
+                self.emit('convert', message='复用相同模型、范围与音频的识别结果')
+                return result
+            except (OSError, ValueError, KeyError, TypeError):
+                pass  # A corrupt cache cannot prevent a fresh, verified run.
+        metadata = self._run_engine()
+        self.check_cancelled()
+        result = EventResult.load(self.work / 'events.json', metadata)
+        result.metadata.update(source_sha256=source_sha, cache_identity=identity, cache_hit=False)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        result.save(cache)
+        return result
+
+    def _run_engine(self, engine=None, work=None, extra=()):
+        engine, work = engine or self.engine, work or self.work
+        command = [*engine.command, "--work", str(work), "--models", str(engine.models),
                    "--parent", str(os.getpid())]
+        if getattr(engine, 'backend', 'legacy') == 'muscriptor':
+            command += ['--model', engine.model, '--device', engine.device]
+        elif getattr(engine, 'backend', 'legacy') == 'game':
+            command += ['--device', engine.device]
+        command += list(extra)
         env = os.environ.copy()
         # The worker is fully offline and does not inherit NetEase credentials.
         for name in list(env):
@@ -153,9 +208,9 @@ class TranscriptionTask:
                 env.pop(name, None)
         env.update(HF_HUB_OFFLINE="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
         lines = queue.Queue(maxsize=100)
-        with (self.work / "engine.stderr").open("wb") as errors:
+        with (work / "engine.stderr").open("wb") as errors:
             self.process = subprocess.Popen(
-                command, cwd=self.work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                command, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=errors, start_new_session=os.name != "nt",
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
 
@@ -181,13 +236,13 @@ class TranscriptionTask:
 
             reader = threading.Thread(target=read_lines, daemon=True)
             reader.start()
-            deadline = time.monotonic() + 1800
+            deadline = time.monotonic() + max(1800, self.length_seconds * 12 + 300)
             done, error, eof = None, None, False
             try:
                 while not eof:
                     self.check_cancelled()
                     if time.monotonic() > deadline:
-                        raise ValueError("扒谱超过 30 分钟，请选择更短的片段")
+                        raise ValueError("扒谱超过本次处理时限，请选择更短的片段")
                     try:
                         line = lines.get(timeout=.1)
                     except queue.Empty:

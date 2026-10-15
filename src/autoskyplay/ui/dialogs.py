@@ -62,6 +62,11 @@ class SettingsDialog(QDialog):
         self.hold.setValue(data["hold_ms"])
         self.hold.setSuffix(" ms")
         form.addRow("游戏按键保持时长", self.hold)
+        self.sustain_keys = QCheckBox("持续音色按谱面音长保持按键（实验）")
+        self.sustain_keys.setChecked(data.get("sustain_keys", False))
+        self.sustain_keys.setEnabled(sys.platform == "win32")
+        self.sustain_keys.setToolTip("仅作用于持续型音色；需在游戏中确认乐器支持长按发声。")
+        form.addRow("游戏长音", self.sustain_keys)
         self.global_keys = QCheckBox("F1–F6 / ← / →")
         self.global_keys.setChecked(data["global_hotkeys"])
         self.global_keys.setEnabled(sys.platform == "win32")
@@ -97,7 +102,10 @@ class SettingsDialog(QDialog):
         self.clear_audio_button = QPushButton("清理扒谱音频缓存（下载文件保留 7 天）")
         self.clear_audio_button.clicked.connect(self.clear_audio_cache)
         root.addWidget(self.clear_audio_button)
-        clear_engine = QPushButton("清理本地扒谱组件与模型")
+        models = QPushButton('扒谱模型管理（MuScriptor small / medium）')
+        models.clicked.connect(self.manage_models)
+        root.addWidget(models)
+        clear_engine = QPushButton("清理本地扒谱运行组件")
         clear_engine.clicked.connect(self.clear_transcription)
         root.addWidget(clear_engine)
         buttons = QDialogButtonBox(
@@ -107,6 +115,10 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
         self.reset_pitches = False
+
+    def manage_models(self):
+        from .model_manager import ModelManager
+        ModelManager(self.host, self).exec()
 
     def clear_audio_cache(self):
         from ..transcription.cache import DownloadCache
@@ -127,6 +139,8 @@ class SettingsDialog(QDialog):
             else:
                 DownloadCache(self.host.store.directory).prune(clear=True)
                 DraftStore(self.host.store.directory).prune_audio(budget=0)
+                from ..transcription.hybrid import clear_hybrid_audio
+                clear_hybrid_audio(self.host.store.directory)
         except OSError as exc:
             QMessageBox.warning(self, '清理音频缓存', str(exc))
 
@@ -137,7 +151,7 @@ class SettingsDialog(QDialog):
         if dialog and dialog.active and dialog.busy:
             QMessageBox.warning(self, "扒谱组件", "请先取消并等待当前任务或组件安装结束")
             return
-        if QMessageBox.question(self, "清理扒谱组件", "移除已安装的扒谱组件和模型？已保存曲谱会保留。",
+        if QMessageBox.question(self, "清理扒谱组件", "移除已安装的运行组件？MuScriptor／GAME 权重、草稿和曲谱会保留。",
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             clear_components(self.host.store.directory)
@@ -167,6 +181,7 @@ class SettingsDialog(QDialog):
             font_size=self.font.value(),
             countdown=self.countdown.value(),
             hold_ms=self.hold.value(),
+            sustain_keys=self.sustain_keys.isChecked(),
             keys=keys,
             cloud_url=self.cloud.text().rstrip("/"),
             update_repo=self.repo.text().strip(),

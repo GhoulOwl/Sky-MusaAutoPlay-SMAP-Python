@@ -40,11 +40,16 @@ from PySide6.QtWidgets import (
 from ..audio import INSTRUMENTS
 from ..netease import NeteaseAudio, NeteaseSong
 from ..playback import Player, State
+from ..transcription.arrangement import SOURCE_NAMES, arrange, build_score
 from ..transcription.cache import DownloadCache
 from ..transcription.drafts import DraftStore
-from ..transcription.engine import find_engine, install_engine
+from ..transcription.engine import find_engine as find_runtime
+from ..transcription.engine import install_engine, select_engine, select_hybrid_engine
+from ..transcription.events import EventResult
 from ..transcription.local import MidiResult, read_midi
-from ..transcription.melody import export_midi, to_score
+from ..transcription.melody import export_midi
+from ..transcription.models import ModelStore
+from ..transcription.performance import generation_mode
 from ..transcription.source import AudioSource, load_waveform
 from ..transcription.task import TranscriptionTask
 from . import style
@@ -54,9 +59,14 @@ from .transcription_widgets import PreviewRoll, RollKeys, Waveform, clock_text
 from .widgets import label
 
 STAGE_NAMES = {
-    "download": "下载音频", "decode": "解码片段", "separate": "分离人声",
+    "load": "加载本地模型",
+    "download": "下载音频", "decode": "解码片段", "separate": "分离人声与乐器",
     "pitch": "识别音高", "convert": "整理旋律", "ready": "识别完成",
 }
+
+
+def find_engine(directory):
+    return find_runtime(directory, 'muscriptor')
 
 
 class TranscriptionDialog(ServiceDialog):
@@ -74,6 +84,7 @@ class TranscriptionDialog(ServiceDialog):
         self.busy = self.saved = self.installing = self.edited = False
         self.restoring = False
         self.draft_id = None
+        self.source_overrides = []
         self.draft_title = None
         self.draft_write_failed = False
         self.media_dir = self.source_dir = None
@@ -110,7 +121,8 @@ class TranscriptionDialog(ServiceDialog):
         header.addWidget(self.engine_status)
         header.addWidget(self.install_button)
         root.addLayout(header)
-        root.addWidget(label("生成可编辑初稿；纯音乐、合唱和强和声可能需要较多修正。", "muted"))
+        self.description = label("钢琴默认主旋律＋稀疏单音伴奏，小提琴默认主旋律；不确定段落保留休止并标记。", "muted")
+        root.addWidget(self.description)
         host.netease_auth_changed.connect(self.update_account)
         song_row = QHBoxLayout()
         self.fetch = QPushButton("选择歌曲")
@@ -192,12 +204,33 @@ class TranscriptionDialog(ServiceDialog):
         self.result_title = label("曲谱预览", "brand")
         toolbar.addWidget(self.result_title, 1)
         self.display_grid = QComboBox()
-        for text, value in (("网格 1/8", 2), ("网格 1/16", 4), ("网格 1/32", 8)):
+        for text, value in (("网格 1/8", 2), ("网格 1/16", 4), ("网格 1/32", 8), ("八分三连音", 3), ("十六分三连音", 6)):
             self.display_grid.addItem(text, value)
         self.display_grid.setCurrentIndex(1)
         self.display_grid.currentIndexChanged.connect(self.update_roll_grid)
         toolbar.addWidget(self.display_grid)
         central.addLayout(toolbar)
+        layers = QHBoxLayout()
+        self.show_melody = QCheckBox('主旋律')
+        self.show_accompaniment = QCheckBox('伴奏')
+        for checkbox in (self.show_melody, self.show_accompaniment):
+            checkbox.setChecked(True)
+            checkbox.toggled.connect(self.layers_changed)
+            layers.addWidget(checkbox)
+        self.section_list = QComboBox()
+        self.section_list.setMinimumWidth(160)
+        self.section_list.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.section_list.setToolTip('选择段落定位；待修正段落保留休止。')
+        self.section_list.currentIndexChanged.connect(self.section_selected)
+        layers.addWidget(self.section_list, 1)
+        self.source_choice = QComboBox(self)
+        self.source_choice.hide()
+        for title, value in (('自动选择来源', 'auto'), ('人声优先', 'vocals'), ('器乐优先', 'other'), ('保留休止', 'rest')):
+            self.source_choice.addItem(title, value)
+        self.apply_source = QPushButton('段落来源 ▾')
+        self.apply_source.clicked.connect(self.section_source_menu)
+        layers.addWidget(self.apply_source)
+        central.addLayout(layers)
         roll_row = QHBoxLayout()
         self.roll = PreviewRoll()
         self.roll.seek_requested.connect(self.roll_seek)
@@ -216,7 +249,7 @@ class TranscriptionDialog(ServiceDialog):
         central.addLayout(zoom)
         audition = QHBoxLayout()
         self.preview_mode = QComboBox()
-        self.preview_mode.addItems(["原曲", "分离人声", "光遇曲谱"])
+        self.preview_mode.addItems(["原曲", "分离人声", "光遇曲谱", "器乐", "低音", "混合背景"])
         self.preview_mode.currentIndexChanged.connect(self.switch_preview)
         self.preview = QPushButton("播放")
         self.preview.clicked.connect(self.toggle_preview)
@@ -233,11 +266,12 @@ class TranscriptionDialog(ServiceDialog):
         self.seek.sliderMoved.connect(self.seek_preview)
         central.addWidget(self.seek)
         tone = QHBoxLayout()
-        tone.addWidget(label("试听音色", "muted"))
+        tone.addWidget(label("演奏音色", "muted"))
         self.instrument = QComboBox()
         for name in INSTRUMENTS:
             self.instrument.addItem(style.tr(name), name)
         self.instrument.setCurrentIndex(max(0, self.instrument.findData(host.instrument.currentData())))
+        self.instrument.setToolTip('按此音色生成和试听：钢琴考虑自然音尾，小提琴默认只生成主旋律。')
         self.instrument.currentIndexChanged.connect(self.tone_changed)
         tone.addWidget(self.instrument, 1)
         tone.addWidget(label("音量", "muted"))
@@ -255,9 +289,39 @@ class TranscriptionDialog(ServiceDialog):
         settings.setContentsMargins(8, 0, 0, 0)
         settings.setSpacing(6)
         settings.addWidget(label("曲谱生成参数", "brand"))
+        self.backend_choice = QComboBox()
+        self.backend_choice.addItem('MuScriptor 原混音 · 默认', 'muscriptor')
+        self.backend_choice.addItem('Demucs＋GAME＋MuScriptor · 实验', 'hybrid')
+        self.backend_choice.setToolTip('混合后端使用 GAME medium 识别人声、MuScriptor 识别背景；更耗时，效果需按歌曲复核。')
+        settings.addWidget(self.backend_choice)
+        self.model_choice = QComboBox()
+        self.model_choice.addItem('MuScriptor small · 默认', 'small')
+        self.model_choice.addItem('MuScriptor medium', 'medium')
+        self.model_choice.setToolTip('用于下一次识别；切换模型不会覆盖已有草稿。模型在主页面设置中管理。')
+        settings.addWidget(self.model_choice)
+        self.device_choice = QComboBox()
+        self.device_choice.addItem('自动选择加速设备', 'auto')
+        self.device_choice.addItem('CPU（兼容模式）', 'cpu')
+        settings.addWidget(self.device_choice)
+        self.model_choice.currentIndexChanged.connect(self.update_engine)
+        self.backend_choice.currentIndexChanged.connect(self.update_engine)
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.setVerticalSpacing(8)
+        self.generation_mode = QComboBox()
+        self.generation_mode.addItem('按音色推荐', 'auto')
+        self.generation_mode.addItem('主旋律＋稀疏单音伴奏', 'simple')
+        self.generation_mode.addItem('仅完整主旋律', 'melody')
+        self.generation_mode.setToolTip('推荐：钢琴含稀疏伴奏，小提琴仅主旋律；可手动选择含伴奏。声部勾选只控制显示与试听。')
+        form.addRow('生成模式', self.generation_mode)
+        self.rhythm_mode = QComboBox()
+        for title, value in (('轻度整理（可靠拍点）', 'gentle'), ('原始时序', 'original'), ('严格对齐', 'strict')):
+            self.rhythm_mode.addItem(title, value)
+        form.addRow('节奏整理', self.rhythm_mode)
+        self.ornaments = QComboBox()
+        self.ornaments.addItem('简化装饰音', 'simplify')
+        self.ornaments.addItem('保留装饰音', 'keep')
+        form.addRow('装饰音', self.ornaments)
         self.auto_bpm = QCheckBox("自动")
         self.auto_bpm.setChecked(True)
         self.bpm = QDoubleSpinBox()
@@ -291,14 +355,14 @@ class TranscriptionDialog(ServiceDialog):
         shift_row.addWidget(self.shift, 1)
         form.addRow("移调", shift_row)
         self.grid = QComboBox()
-        for name, value in (("关闭 · 保留原节奏", 0), ("吸附 1/8", 2), ("吸附 1/16", 4), ("吸附 1/32", 8)):
+        for name, value in (("自动分格 · 1/16", 0), ("吸附 1/8", 2), ("吸附 1/16", 4), ("吸附 1/32", 8), ("八分三连音", 3), ("十六分三连音", 6)):
             self.grid.addItem(name, value)
         form.addRow("节拍吸附", self.grid)
         self.grid_offset = QDoubleSpinBox()
         self.grid_offset.setRange(-60000, 60000)
         self.grid_offset.setSuffix(" ms")
         self.grid_offset.setSingleStep(10)
-        self.grid_offset.setToolTip("相对于片段起点的网格偏移；不会自动检测第一拍。")
+        self.grid_offset.setToolTip("拍点偏移；检测的是节拍脉冲，不代表小节第一拍。手动 BPM 使用固定网格。")
         form.addRow("网格起点", self.grid_offset)
         self.param_form = form
         form_host = QWidget()
@@ -311,7 +375,7 @@ class TranscriptionDialog(ServiceDialog):
         form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         form_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         form_scroll.setMinimumHeight(90)
-        form_host.setMinimumHeight(230)
+        form_host.setMinimumHeight(365)
         form.setRowVisible(self.grid_offset, False)
         form_scroll.setWidget(form_host)
         settings.addWidget(form_scroll, 1)
@@ -352,7 +416,7 @@ class TranscriptionDialog(ServiceDialog):
         self.save.setObjectName("accent")
         self.save.clicked.connect(self.save_score)
         self.midi = QPushButton("导出原始 MIDI")
-        self.midi.setToolTip("导出经过过滤的原始旋律；不含光遇移调、节拍吸附及人工编辑。")
+        self.midi.setToolTip("导出识别到的人声／器乐／低音，保留来源音轨；不含自动生成伴奏、光遇映射及人工编辑。")
         self.midi.clicked.connect(self.save_midi)
         close = QPushButton("关闭")
         close.clicked.connect(self.close)
@@ -368,6 +432,8 @@ class TranscriptionDialog(ServiceDialog):
         self.auto_shift.toggled.connect(self.schedule_remap)
         self.auto_bpm.toggled.connect(self.schedule_remap)
         self.grid.currentIndexChanged.connect(self.schedule_remap)
+        for combo in (self.generation_mode, self.rhythm_mode, self.ornaments):
+            combo.currentIndexChanged.connect(self.schedule_remap)
         self.component_progress.connect(self.progress.setValue)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll)
@@ -378,6 +444,10 @@ class TranscriptionDialog(ServiceDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, "roll"):
+            compact = self.height() < 820
+            self.description.setVisible(not compact)
+            self.roll.setMinimumHeight(120 if compact else 170)
         if hasattr(self, "history_panel"):
             if self.width() < 1120 and not self.history_panel.isHidden():
                 self.history_panel.hide()
@@ -395,8 +465,15 @@ class TranscriptionDialog(ServiceDialog):
 
     def update_engine(self):
         try:
+            if self.backend_choice.currentData() == 'hybrid':
+                select_hybrid_engine(self.host.store.directory, self.model_choice.currentData(), self.device_choice.currentData())
+                self.engine_status.setText(f'混合实验 · GAME medium / MuScriptor {self.model_choice.currentData()} · 就绪')
+                return
             engine = find_engine(self.host.store.directory)
-            self.engine_status.setText('本地引擎已就绪' if engine else '未安装扒谱组件')
+            size = self.model_choice.currentData()
+            installed = ModelStore(self.host.store.directory).installed(size)
+            self.engine_status.setText(f'MuScriptor {size} · ' +
+                                      ('就绪' if engine and installed else '未安装运行组件' if not engine else '请在设置中下载模型'))
         except ValueError as exc:
             self.engine_status.setText(str(exc))
 
@@ -404,8 +481,9 @@ class TranscriptionDialog(ServiceDialog):
         if busy:
             self.stop_preview()
         self.busy = busy
-        for widget in (self.fetch, self.install_button, self.history_list, self.start_time, self.end_time, self.all_range, self.short,
-                       self.waveform, self.restore_audio):
+        for widget in (self.fetch, self.install_button, self.backend_choice, self.model_choice, self.device_choice, self.history_list, self.start_time, self.end_time, self.all_range, self.short,
+                       self.waveform, self.restore_audio, self.instrument, self.generation_mode, self.rhythm_mode,
+                       self.ornaments, self.source_choice, self.apply_source, self.section_list):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
         self.cancel_button.setVisible(busy)
@@ -415,9 +493,10 @@ class TranscriptionDialog(ServiceDialog):
             widget.setEnabled(not busy)
         self.shift.setEnabled(not busy and not self.auto_shift.isChecked())
         self.bpm.setEnabled(not busy and not self.auto_bpm.isChecked())
+        self.grid.setEnabled(not busy and self.rhythm_mode.currentData() != 'original')
         self.grid_offset.setEnabled(not busy and bool(self.grid.currentData()))
         self.param_form.setRowVisible(self.grid_offset, bool(self.grid.currentData()))
-        self.param_host.setMinimumHeight(270 if self.grid.currentData() else 230)
+        self.param_host.setMinimumHeight(405 if self.grid.currentData() else 365)
         self.update_output()
         self.update_account()
 
@@ -429,10 +508,17 @@ class TranscriptionDialog(ServiceDialog):
         for widget in (self.preview, self.preview_mode, self.seek, self.rewind):
             widget.setEnabled(not self.busy and bool(playable))
         self.preview_mode.model().item(1).setEnabled(bool(self.media_dir and (self.media_dir / 'vocals.wav').exists()))
-        self.preview_mode.model().item(2).setEnabled(self.score is not None)
+        self.preview_mode.model().item(2).setEnabled(self.score is not None and bool(self.score.notes))
+        for index, stem in ((3, 'other'), (4, 'bass'), (5, 'background')):
+            self.preview_mode.model().item(index).setEnabled(bool(self.media_dir and (self.media_dir / (stem + '.wav')).exists()))
+        self.apply_source.setEnabled(not self.busy and self.result is not None and not isinstance(self.result, MidiResult))
         midi = isinstance(self.result, MidiResult)
         self.begin.setText('转换 MIDI 选段' if midi else '重新识别' if self.result else '开始扒谱')
-        self.threshold.setEnabled(not self.busy and not midi)
+        native = isinstance(self.result, EventResult) or self.result is None
+        self.threshold.setEnabled(not self.busy and not midi and not native)
+        self.param_form.setRowVisible(self.threshold, not native and not midi)
+        self.ornaments.setEnabled(not self.busy and not native and not midi)
+        self.ornaments.setToolTip('模型事件保留原始起音与结束；可用最短音符和生成模式调整编配。' if native else '')
         self.minimum.setEnabled(not self.busy and not midi)
         self.save.setText('再次保存到曲库' if self.saved else '保存到曲库')
         missing = self.song is not None and not (self.source_dir and
@@ -788,9 +874,10 @@ class TranscriptionDialog(ServiceDialog):
             self.convert_midi_selection()
             return
         try:
-            engine = find_engine(self.host.store.directory)
-            if not engine:
-                raise ValueError('请先导入本机平台的扒谱组件包')
+            if self.backend_choice.currentData() != 'hybrid' and not find_engine(self.host.store.directory):
+                raise ValueError('请先导入本机平台的 MuScriptor 2.0.0 运行组件包')
+            selector = select_hybrid_engine if self.backend_choice.currentData() == 'hybrid' else select_engine
+            engine = selector(self.host.store.directory, self.model_choice.currentData(), self.device_choice.currentData())
             start, length = self.start_time.value(), self.length.value()
             source = self.source_dir / 'source.audio' if self.source_dir else None
             task = TranscriptionTask(self.host.store.directory, self.client, self.song,
@@ -813,6 +900,8 @@ class TranscriptionDialog(ServiceDialog):
         self.remap_timer.stop()
         if self.task:
             self.task.close()
+        self.source_overrides = []
+        self.section_list.clear()
         self.task = self.result = self.score = None
         self.media_dir = None
         self.cover = None
@@ -851,6 +940,7 @@ class TranscriptionDialog(ServiceDialog):
                 if stage == 'ready':
                     self.result, self.cover = event['result'], event.get('cover') or self.cover
                     self.draft_id = None
+                    self.source_overrides = []
                     self.edited = self.saved = False
                     self.media_dir = self.task.work
                     self.audition_source = False
@@ -869,7 +959,8 @@ class TranscriptionDialog(ServiceDialog):
                 elif stage in STAGE_NAMES:
                     self.progress.setRange(0, 100)
                     self.progress.setValue(max(0, min(100, int(event.get('progress', 0)))))
-                    self.status.setText(STAGE_NAMES[stage] + '…')
+                    source = {'vocals': '人声', 'other': '器乐', 'bass': '低音'}.get(event.get('source'), '')
+                    self.status.setText(STAGE_NAMES[stage] + (' · ' + source if source else '') + '…')
         playing = self.player.state == State.PLAYING or self.media.playbackState() == QMediaPlayer.PlaybackState.PlayingState
         if playing and not self.seek.isSliderDown():
             position = self.player.position_ms if self.preview_mode.currentIndex() == 2 else self.media.position() - self.media_offset
@@ -885,19 +976,24 @@ class TranscriptionDialog(ServiceDialog):
         self.waveform.update()
 
     def parameters(self):
-        return dict(threshold=self.threshold.value(), minimum=self.minimum.value(), auto_shift=self.auto_shift.isChecked(),
+        return dict(backend=self.backend_choice.currentData(), model=self.model_choice.currentData(), device=self.device_choice.currentData(),
+                    threshold=self.threshold.value(), minimum=self.minimum.value(), auto_shift=self.auto_shift.isChecked(),
                     shift=self.shift.value(), auto_bpm=self.auto_bpm.isChecked(), bpm=self.bpm.value(),
                     grid=self.grid.currentData(), grid_offset=self.grid_offset.value(),
-                    display_grid=self.display_grid.currentData(), instrument=self.instrument.currentData())
+                    display_grid=self.display_grid.currentData(), instrument=self.instrument.currentData(),
+                    mode=self.generation_mode.currentData(), rhythm=self.rhythm_mode.currentData(),
+                    ornaments=self.ornaments.currentData(), overrides=self.source_overrides,
+                    show_melody=self.show_melody.isChecked(), show_accompaniment=self.show_accompaniment.isChecked())
 
     def schedule_remap(self, *_):
         if self.restoring:
             return
         self.shift.setEnabled(not self.auto_shift.isChecked() and not self.busy)
         self.bpm.setEnabled(not self.auto_bpm.isChecked() and not self.busy)
+        self.grid.setEnabled(not self.busy and self.rhythm_mode.currentData() != 'original')
         self.grid_offset.setEnabled(bool(self.grid.currentData()) and not self.busy)
         self.param_form.setRowVisible(self.grid_offset, bool(self.grid.currentData()))
-        self.param_host.setMinimumHeight(270 if self.grid.currentData() else 230)
+        self.param_host.setMinimumHeight(405 if self.grid.currentData() else 365)
         self.remap_timer.start()
 
     def flush_remap(self):
@@ -926,12 +1022,15 @@ class TranscriptionDialog(ServiceDialog):
                                     "BPM 未可靠估计，暂用 120；可关闭自动后手动设置。")
             if isinstance(self.result, MidiResult):
                 self.bpm.setToolTip("读取 MIDI 选段起点的速度；变速信息已换算为音符的真实时间。")
-            notes = self.result.notes(self.threshold.value(), self.minimum.value())
-            metadata = dict(self.result.metadata, threshold=self.threshold.value(), minimum_ms=self.minimum.value())
-            self.score, stats = to_score(notes, self.draft_title or self.song.name, self.bpm.value(),
-                                        None if self.auto_shift.isChecked() else self.shift.value(),
-                                        self.grid.currentData(), metadata, self.song.artists,
-                                        grid_offset_ms=self.grid_offset.value())
+            self.score, stats = build_score(self.result, self.draft_title or self.song.name,
+                                            threshold=self.threshold.value(), minimum=self.minimum.value(),
+                                            mode=self.generation_mode.currentData(), ornaments=self.ornaments.currentData(),
+                                            overrides=self.source_overrides, bpm=self.bpm.value(),
+                                            shift=None if self.auto_shift.isChecked() else self.shift.value(),
+                                            quantize=self.grid.currentData() or (4 if self.rhythm_mode.currentData() == 'strict' else 0), grid_offset_ms=self.grid_offset.value(),
+                                            rhythm=self.rhythm_mode.currentData(),
+                                            use_detected_beats=self.auto_bpm.isChecked(), author=self.song.artists,
+                                            instrument=self.instrument.currentData())
             if self.auto_shift.isChecked():
                 self.shift.blockSignals(True)
                 self.shift.setValue(stats['shift'])
@@ -941,8 +1040,6 @@ class TranscriptionDialog(ServiceDialog):
                 if not image.isNull():
                     self.score.root['cover'] = encode_cover(image)
             self.saved = False
-            self.statistics.setText(f"{stats['notes']} 个音符 · 移调 {stats['shift']:+d} 半音\n"
-                                    f"半音近似 {stats['semitones']} 个 · 音域折叠 {stats['folded']} 个")
         except ValueError as exc:
             self.score = None
             self.statistics.setText('没有符合当前过滤条件的音符')
@@ -951,13 +1048,81 @@ class TranscriptionDialog(ServiceDialog):
         self.persist_draft()
         self.update_output()
 
+    def visible_score(self):
+        if self.score is None:
+            return None
+        score = copy.copy(self.score)
+        score.notes = [n for n in self.score.notes if
+                       (self.show_accompaniment.isChecked() if n.extra.get('role') == 'accompaniment'
+                        else self.show_melody.isChecked())]
+        return score
+
+    def layers_changed(self, *_):
+        if self.restoring or not hasattr(self, 'roll'):
+            return
+        self.stop_preview()
+        self.render_result()
+        self.persist_draft()
+
+    def section_selected(self, *_):
+        section = self.section_list.currentData()
+        if section and not self.restoring:
+            self.roll_seek(section['start_ms'])
+
+    def section_source_menu(self):
+        if not self.section_list.currentData() or self.busy:
+            return
+        menu = QMenu(self)
+        for i in range(self.source_choice.count()):
+            action = menu.addAction(self.source_choice.itemText(i))
+            action.setData(i)
+        chosen = menu.exec(self.apply_source.mapToGlobal(self.apply_source.rect().bottomLeft()))
+        if chosen is not None:
+            self.source_choice.setCurrentIndex(chosen.data())
+            self.apply_section_source()
+
+    def apply_section_source(self):
+        section = self.section_list.currentData()
+        if not section or self.busy or isinstance(self.result, MidiResult):
+            return
+        self.flush_remap()
+        if not self.persist_draft():
+            return
+        source = self.source_choice.currentData()
+        start, end = section['start_ms'], section['end_ms']
+        self.source_overrides = [o for o in self.source_overrides if o['end_ms'] <= start or o['start_ms'] >= end]
+        if source != 'auto':
+            self.source_overrides.append(dict(start_ms=start, end_ms=end, source=source))
+        self.remap()
+
     def render_result(self):
         duration = self.result.duration_ms if self.result else 0
-        self.roll.set_score(self.score, duration)
+        self.roll.set_score(self.visible_score(), duration)
+        self.section_list.blockSignals(True)
+        selected = self.section_list.currentIndex()
+        self.section_list.clear()
+        info = self.score.root.get('transcription', {}) if self.score else {}
+        if self.score:
+            notes = self.score.notes
+            self.statistics.setText(
+                f"{len(notes)} 个音符 · 移调 {info.get('shift', 0):+d} 半音\n"
+                f"伴奏 {sum(n.extra.get('role') == 'accompaniment' for n in notes)} 个 · "
+                f"待修正 {sum(s['needs_review'] for s in info.get('sections', []))} 段\n"
+                f"半音近似 {sum(bool(n.extra.get('approximated')) for n in notes)} 个 · "
+                f"映射待核对 {sum(bool(n.extra.get('mappingReview')) for n in notes)} 处")
+        for section in info.get('sections', []):
+            title = SOURCE_NAMES.get(section['source'], section['source'])
+            self.section_list.addItem(f"{clock_text(section['start_ms'] / 1000)}—{clock_text(section['end_ms'] / 1000)} · {title}", section)
+        self.section_list.setCurrentIndex(max(0, min(selected, self.section_list.count() - 1)))
+        self.section_list.blockSignals(False)
+        self.statistics.setToolTip('\n'.join([
+            '映射待核对表示光遇音域或半音改编限制；待修正休止表示缺少可靠旋律证据。',
+            *info.get('warnings', [])]))
         self.seek.setRange(0, round(max(duration, self.score.duration_ms if self.score else 0)))
         self.context_label.setText(f'对应原曲 {clock_text(self.result_start())} · 只读预览，点击定位'
-                                  + (' · 人工编辑版本' if self.edited else ''))
-        self.result_title.setText('曲谱预览 · ' + ('已编辑' if self.edited else '已生成'))
+                                  + (' · 人工编辑版本' if self.edited else '')
+                                  + (' · ' + info['warnings'][0] if info.get('warnings') else ''))
+        self.result_title.setText('曲谱预览 · ' + ('已编辑' if self.edited else '已生成' if self.score and self.score.notes else '待修正'))
         self.update_roll_grid()
 
     def update_roll_grid(self, *_):
@@ -1052,6 +1217,10 @@ class TranscriptionDialog(ServiceDialog):
         else:
             self.waveform.data = None
         params = data['params']
+        self.backend_choice.setCurrentIndex(max(0, self.backend_choice.findData(result.metadata.get('backend', 'muscriptor'))))
+        self.model_choice.setCurrentIndex(max(0, self.model_choice.findData(result.metadata.get('model', params.get('model', 'small')))))
+        self.device_choice.setCurrentIndex(max(0, self.device_choice.findData(params.get('device', 'auto'))))
+        self.source_overrides = params.get('overrides', [])
         for widget, key in ((self.threshold, 'threshold'), (self.minimum, 'minimum'), (self.shift, 'shift'),
                             (self.bpm, 'bpm'), (self.grid_offset, 'grid_offset')):
             widget.setValue(params.get(key, 0))
@@ -1059,6 +1228,11 @@ class TranscriptionDialog(ServiceDialog):
             widget.setChecked(params.get(key, True))
         for widget, key in ((self.grid, 'grid'), (self.display_grid, 'display_grid'), (self.instrument, 'instrument')):
             widget.setCurrentIndex(max(0, widget.findData(params.get(key))))
+        for widget, key, default in ((self.generation_mode, 'mode', 'simple'), (self.rhythm_mode, 'rhythm', 'original'),
+                                     (self.ornaments, 'ornaments', 'simplify')):
+            widget.setCurrentIndex(max(0, widget.findData(params.get(key, default))))
+        self.show_melody.setChecked(params.get('show_melody', True))
+        self.show_accompaniment.setChecked(params.get('show_accompaniment', True))
         self.cover = None
         if score and score.root.get('cover'):
             try:
@@ -1116,6 +1290,8 @@ class TranscriptionDialog(ServiceDialog):
         try:
             DownloadCache(self.host.store.directory).prune(clear=True)
             self.drafts.prune_audio(budget=0)
+            from ..transcription.hybrid import clear_hybrid_audio
+            clear_hybrid_audio(self.host.store.directory)
             self.update_output()
             self.status.setText('下载和试听缓存已清理，草稿源文件与曲谱仍保留。')
         except OSError as exc:
@@ -1144,7 +1320,13 @@ class TranscriptionDialog(ServiceDialog):
         if self.restoring:
             return
         self.stop_preview()
-        self.persist_draft()
+        # Merely auditioning another timbre must never destroy an edited score.
+        # An explicit generation-mode change forks the durable edited version.
+        if self.edited:
+            self.persist_draft()
+            self.status.setText('已切换试听音色；人工编辑谱保持原样。调整生成模式可生成新的编配草稿。')
+        else:
+            self.schedule_remap()
 
     def toggle_preview(self):
         if self.busy:
@@ -1168,8 +1350,8 @@ class TranscriptionDialog(ServiceDialog):
             position = 0
             self.seek.setValue(0)
         if self.preview_mode.currentIndex() == 2:
-            if not self.score:
-                self.failed('暂无可试听的曲谱')
+            if not self.score or not self.visible_score().notes:
+                self.failed('当前可见声部没有可试听的音符；请检查待修正段落或声部开关')
                 return
             from ..audio import Mixer, QtAudioOutput
             try:
@@ -1181,7 +1363,7 @@ class TranscriptionDialog(ServiceDialog):
                     if self.local_audio is None:
                         self.local_audio = QtAudioOutput(self.local_mixer)
                 self.local_mixer.volume = self.volume.value() / 100
-                self.player.load(self.score)
+                self.player.load(self.visible_score())
                 self.player.timeline.duration_ms = self.play_duration()
                 self.player.seek(position)
                 self.player.play(self.local_mixer)
@@ -1193,7 +1375,7 @@ class TranscriptionDialog(ServiceDialog):
             path = None
             self.media_offset = 0
             if self.result and not self.audition_source and self.media_dir:
-                candidate = self.media_dir / ('original.wav' if mode == 0 else 'vocals.wav')
+                candidate = self.media_dir / {0: 'original.wav', 1: 'vocals.wav', 3: 'other.wav', 4: 'bass.wav', 5: 'background.wav'}[mode]
                 if candidate.exists():
                     path = candidate
             if path is None and mode == 0 and self.source_dir and (self.source_dir / 'source.audio').exists():
@@ -1311,7 +1493,17 @@ class TranscriptionDialog(ServiceDialog):
         path, _ = QFileDialog.getSaveFileName(self, '导出识别后的原始音高与节奏', self.song.name + '.mid', 'MIDI (*.mid)')
         if path:
             try:
-                export_midi(self.result.notes(self.threshold.value(), self.minimum.value()), Path(path),
+                if isinstance(self.result, EventResult):
+                    self.result.export_midi(Path(path))
+                    self.status.setText('原始多轨 MIDI 已导出（模型音符事件，固定力度；不含光遇映射）')
+                    return
+                if isinstance(self.result, MidiResult):
+                    notes = self.result.notes()
+                else:
+                    notes, _ = arrange(self.result, self.threshold.value(), self.minimum.value(),
+                                       generation_mode(self.generation_mode.currentData(), self.instrument.currentData()),
+                                       self.ornaments.currentData(), self.source_overrides)
+                export_midi([n for n in notes if not n.generated], Path(path),
                             self.bpm.value(), self.song.name)
                 self.status.setText('原始旋律 MIDI 已导出（不含光遇映射和人工编辑）')
             except (OSError, ValueError) as exc:

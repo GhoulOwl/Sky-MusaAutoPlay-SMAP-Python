@@ -62,6 +62,9 @@ def main():
         resources = ROOT / "dist/AutoSkyPlay.app/Contents/Resources"
         shutil.copy(ROOT / "LICENSE", resources / "LICENSE")
         shutil.copy(ROOT / "THIRD_PARTY_NOTICES.md", resources / "THIRD_PARTY_NOTICES.md")
+        # Resource additions invalidate PyInstaller's initial ad-hoc signature.
+        subprocess.run(["codesign", "--force", "--deep", "--sign", "-",
+                        str(ROOT / "dist/AutoSkyPlay.app")], check=True)
     if args.installer:
         if sys.platform != "win32":
             parser.error("Windows 安装包必须在 Windows 上构建")
