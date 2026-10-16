@@ -10,6 +10,9 @@ MuScriptor medium 可选；也可切换到 MuScriptor 原混音后端。音频�
 1. 在扒谱窗口「组件管理」导入对应平台的 `AutoSkyPlay-Hybrid-3.1.0-<platform>[-cu128/-cpu].zip`。
    组件提供独立 Python/PyTorch/FFmpeg 环境和固定 Demucs 权重；主程序不加载 PyTorch。
    原混音后端使用独立 `AutoSkyPlay-MuScriptor-2.1.0-<platform>[-cu128/-cpu].zip`。
+   从 GitHub Actions 下载的外层 ZIP 也可直接导入，无需先解压：程序校验其中组件 ZIP 的 SHA-256，
+   再校验组件清单及全部文件。导入成功后会切换到对应后端并显示已安装的组件版本；
+   同时保留已有模型和草稿。仍提示缺少模型时，按下一步安装模型即可。
 2. 在主页面「设置 → 扒谱模型管理」安装 GAME medium，再下载 MuScriptor small（约 412 MB）或 medium（约 1.23 GB）。
    下载源固定为 ModelScope 的 `MuScriptor/muscriptor-small`、`MuScriptor/muscriptor-medium` 社区镜像，
    固定修订和 SHA256，支持取消、续传、重试、本地目录导入、单独删除。

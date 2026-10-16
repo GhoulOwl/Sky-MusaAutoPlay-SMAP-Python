@@ -879,7 +879,14 @@ class TranscriptionDialog(ServiceDialog):
         self.status.setText('正在校验并安装组件…')
         self.job(lambda: install_engine(Path(path), self.host.store.directory,
                                        self.install_cancelled.is_set, self.component_progress.emit),
-                 lambda _: self.status.setText('扒谱组件安装完成'), self.failed, self.install_finished)
+                 self.component_installed, self.failed, self.install_finished)
+
+    def component_installed(self, engine):
+        index = self.backend_choice.findData(engine.backend)
+        if index >= 0:
+            self.backend_choice.setCurrentIndex(index)
+        name = {'hybrid': '混合后端', 'muscriptor': 'MuScriptor'}.get(engine.backend, '扒谱')
+        self.status.setText(f'{name} {engine.version} 运行组件安装完成')
 
     def install_finished(self, _=None):
         self.installing = False
