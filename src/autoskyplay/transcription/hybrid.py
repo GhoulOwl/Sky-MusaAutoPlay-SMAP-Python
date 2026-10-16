@@ -15,12 +15,13 @@ import numpy as np
 import soundfile as sf
 
 from ..score import atomic_json
+from .devices import DEVICE_POLICY
 from .engine import Engine
 from .events import EventResult
 from .game_models import GAME_MODELS, GAME_REVISION
 from .models import MODELS, RUNTIME_REVISION, ModelStore, digest
 
-HYBRID_VERSION = "hybrid-1"
+HYBRID_VERSION = "hybrid-2"
 STEMS = ("original.wav", "vocals.wav", "other.wav", "bass.wav", "drums.wav")
 
 
@@ -61,7 +62,7 @@ class StageCache:
 
     def restore(self, work, expected=None):
         try:
-            receipt = json.loads((self.path / "cache.json").read_text())
+            receipt = json.loads((self.path / "cache.json").read_text(encoding="utf-8"))
             if receipt["identity"] != self.identity:
                 return False
             if expected is not None and set(receipt["files"]) != set(expected):
@@ -107,12 +108,15 @@ class StageCache:
 
 def run_hybrid(task):
     config, work, directory = task.engine.config, task.work, task.directory
-    origin = json.loads((work / "request.json").read_text())
+    origin = json.loads((work / "request.json").read_text(encoding="utf-8"))
     source_sha = digest(work / "source.audio", task.cancelled.is_set)
     models = Path(config["separation_models"])
-    model_manifest = json.loads((models / "models.json").read_text())
+    model_manifest = json.loads((models / "models.json").read_text(encoding="utf-8"))
     commands = config["commands"]
     timings, hits, identities, profiles = {}, {}, {}, {}
+    # 3.0.0 components predate GPU separation/GAME. Keep their receipts truthful.
+    stage_device = task.engine.device if config.get('accelerated_stages', True) else 'cpu'
+    game_device = config.get('game_device', stage_device)
 
     def stage(name, identity, folder, files, runner):
         task.check_cancelled()
@@ -130,7 +134,7 @@ def run_hybrid(task):
                 task.check_cancelled()
                 atomic_json(Path(folder) / profile_file, profile)
                 cache.publish(folder, cached_files)
-        profiles[name] = json.loads((Path(folder) / profile_file).read_text())
+        profiles[name] = json.loads((Path(folder) / profile_file).read_text(encoding="utf-8"))
         timings[name] = time.perf_counter() - started
 
     separation = dict(
@@ -138,9 +142,10 @@ def run_hybrid(task):
         request=origin,
         model=model_manifest,
         runtime="demucs-4.1.0",
-        worker="separate-1",
+        worker="separate-2",
         seed=0,
-        device="cpu",
+        device=stage_device,
+        device_policy=DEVICE_POLICY,
         segment=4,
         overlap=0.25,
         outer_seconds=30,
@@ -153,7 +158,8 @@ def run_hybrid(task):
         separation,
         work,
         (*STEMS, "separation.json"),
-        lambda: task._run_engine(Engine(commands["separate"], models), work, ["--separate-only"]),
+        lambda: task._run_engine(Engine(commands["separate"], models, backend='separate', device=stage_device),
+                                 work, ["--separate-only"]),
     )
     stems_sha = {n: digest(work / n, task.cancelled.is_set) for n in STEMS}
     stems_pcm = {n: audio_digest(work / n, task.cancelled.is_set) for n in STEMS}
@@ -168,7 +174,7 @@ def run_hybrid(task):
         ("features.json",),
         lambda: task._run_engine(Engine(features, models), work),
     )
-    reference = json.loads((work / "features.json").read_text())
+    reference = json.loads((work / "features.json").read_text(encoding="utf-8"))
     game_work = work / "game"
     game_work.mkdir(exist_ok=True)
     copy_file(work / "vocals.wav", game_work / "vocals.wav")
@@ -178,9 +184,10 @@ def run_hybrid(task):
         input_pcm_sha256=stems_pcm["vocals.wav"],
         model=GAME_MODELS["medium"],
         runtime=GAME_REVISION,
-        worker="game-worker-2",
+        worker="game-worker-3",
         settings=game_parameters,
-        device=config.get("game_device", "cpu"),
+        device=game_device,
+        device_policy=DEVICE_POLICY,
         defaults="game-defaults-1",
     )
     task.emit("pitch", source="GAME", message="识别人声")
@@ -191,7 +198,7 @@ def run_hybrid(task):
         ("events.json",),
         lambda: task._run_engine(
             Engine(
-                commands["game"], task.engine.models, backend="game", device=config.get("game_device", "cpu")
+                commands["game"], task.engine.models, backend="game", device=game_device
             ),
             game_work,
         ),
@@ -232,6 +239,7 @@ def run_hybrid(task):
         runtime=RUNTIME_REVISION,
         worker="background-2-near-zero-tail",
         device=task.engine.device,
+        device_policy=DEVICE_POLICY,
         decoding="greedy-batch1-prelude-strict-v1",
         input_scale=1,
     )

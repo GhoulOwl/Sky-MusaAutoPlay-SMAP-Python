@@ -26,11 +26,13 @@ def run(args):
     from muscriptor.events import NoteEndEvent, ProgressEvent
 
     from autoskyplay.transcription import worker
+    from autoskyplay.transcription.devices import select_device
+    from autoskyplay.transcription.engine import MUSCRIPTOR_VERSION
     from autoskyplay.transcription.events import EventResult, ModelNote
     from autoskyplay.transcription.models import MODELS, RUNTIME_REVISION, ModelStore
 
     work = Path(args.work)
-    request = json.loads((work / 'request.json').read_text())
+    request = json.loads((work / 'request.json').read_text(encoding="utf-8"))
     start, length = float(request['start']), float(request['length'])
     input_source = request.get('audio_source', 'original')
     if input_source not in ('original', 'background', 'background_no_drums'):
@@ -41,9 +43,8 @@ def run(args):
         raise ValueError('请选择不超过 10 分钟的有效片段')
     torch.set_num_threads(4)
     torch.manual_seed(0)
-    device = args.device
-    if device == 'auto':
-        device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
+    device, device_selection = select_device(
+        torch, args.device, allow_mps=True, notice=lambda message: emit('notice', message=message))
     emit('decode', 0)
     command = [imageio_ffmpeg.get_ffmpeg_exe(), '-nostdin', '-v', 'error', '-y', '-i', str(work/'source.audio'),
                '-ss', str(start), '-t', str(length), '-vn', '-ar', '16000', '-ac', '1',
@@ -97,6 +98,8 @@ def run(args):
     del model
     if device == 'mps':
         torch.mps.empty_cache()
+    elif device == 'cuda':
+        torch.cuda.empty_cache()
     emit('convert', 0, message='整理原始音符与节拍')
     # Background events use the task's one original/drums beat reference later.
     # Their recognition cache is independent of rhythm/arrangement settings.
@@ -124,7 +127,7 @@ def run(args):
         valid = bool(frozen_rhythm.get('bpm_estimated', True))
     energy = [float(20*np.log10(max(1e-8, np.sqrt(np.mean(audio[i:i+1600]**2)))))
               for i in range(0, len(audio), 1600)]
-    metadata = dict(engine='muscriptor-2.0.0', runtime_revision=RUNTIME_REVISION, model=args.model,
+    metadata = dict(engine='muscriptor-' + MUSCRIPTOR_VERSION, runtime_revision=RUNTIME_REVISION, model=args.model,
                     audio_source=input_source, input_origin_seconds=request.get('input_origin_seconds', start),
                     input_scale=request.get('input_scale', 1),
                     rhythm_reference='frozen-draft' if frozen_rhythm is not None else
@@ -133,7 +136,7 @@ def run(args):
                     model_repository=f'MuScriptor/muscriptor-{args.model}', model_source='modelscope.cn',
                     model_revision=MODELS[args.model]['revision'],
                     model_sha256=MODELS[args.model]['files']['model.safetensors'][1],
-                    device=device, load_seconds=loaded-beginning, inference_seconds=elapsed,
+                    device=device, device_selection=device_selection, load_seconds=loaded-beginning, inference_seconds=elapsed,
                     batch_size=1, prelude_forcing=True, beam_size=1, sampling=False, seed=0,
                     bpm_estimated=valid, model_confidence_available=False, dropped_invalid_events=dropped,
                     warnings=['模型输出的零长度或越界音符已忽略'] if dropped else [])
@@ -158,8 +161,11 @@ def main():
     if args.check:
         import torch
         from muscriptor import TranscriptionModel
+
+        from autoskyplay.transcription.engine import MUSCRIPTOR_VERSION
         assert callable(TranscriptionModel.load_model)
-        emit('ready', engine='2.0.0', torch=torch.__version__, mps=torch.backends.mps.is_available())
+        emit('ready', engine=MUSCRIPTOR_VERSION, torch=torch.__version__, mps=torch.backends.mps.is_available(),
+             cuda_runtime=torch.version.cuda, cuda_available=torch.cuda.is_available())
         return
     if not args.work or not args.models:
         parser.error('--work and --models are required')

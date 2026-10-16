@@ -455,7 +455,7 @@ def test_netease_qr_login_updates_home_and_stops_polling(qtbot, tmp_path, monkey
     qtbot.waitUntil(lambda: not dialog.active)
     assert "Listener" in window.netease_account.text() and not dialog.timer.isActive()
     assert Store(tmp_path).data["remember_netease_login"]
-    assert "MUSIC_U" not in window.store.path.read_text()
+    assert "MUSIC_U" not in window.store.path.read_text(encoding="utf-8")
     editor = EditorDialog(window, Score("Example"))
     qtbot.addWidget(editor)
     lookup = NeteaseSongDialog(editor)
@@ -541,7 +541,7 @@ def test_netease_startup_restores_saved_session_and_editor_tracks_progress(qtbot
     assert "Listener" in lookup.session.text() and lookup.login_button.isHidden()
     assert lookup.fetch.isEnabled() and window.netease_client.cookie == "MUSIC_U=saved"
     assert Store(tmp_path).data["remember_netease_login"]
-    assert "MUSIC_U" not in window.store.path.read_text()
+    assert "MUSIC_U" not in window.store.path.read_text(encoding="utf-8")
     lookup.reject()
     editor.close()
     window.close()

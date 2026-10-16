@@ -27,12 +27,14 @@ def main():
     parser.add_argument("--model", choices=["small", "medium"], default="small")
     parser.add_argument("--device", choices=["auto", "cpu", "mps", "cuda"], default="auto")
     parser.add_argument("--background", choices=["with_drums", "without_drums"], default="with_drums")
-    parser.add_argument("--game-device", choices=["cpu", "mps"], default="cpu")
+    parser.add_argument("--game-device", choices=["auto", "cpu", "mps", "cuda"],
+                        help='Override GAME only; otherwise inherit --device')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "complete.json").unlink(missing_ok=True)
     engine = select_hybrid_engine(args.data, args.model, args.device, args.background)
-    engine.config["game_device"] = args.game_device
+    if args.game_device:
+        engine.config["game_device"] = args.game_device
     task = TranscriptionTask(
         args.cache or args.data,
         SimpleNamespace(),

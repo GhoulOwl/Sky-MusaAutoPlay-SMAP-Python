@@ -11,7 +11,9 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-from autoskyplay.transcription.engine import platform_tag
+from torch_runtime import inspect_runtime, install_runtime, runtime_variant, verify_cuda_bundle
+
+from autoskyplay.transcription.engine import HYBRID_COMPONENT_VERSION, platform_tag
 from autoskyplay.transcription.game_models import GAME_REVISION
 from autoskyplay.transcription.models import RUNTIME_REVISION
 
@@ -28,7 +30,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-install", action="store_true")
     parser.add_argument("--package", action="store_true")
+    parser.add_argument('--torch-runtime', choices=['auto', 'cpu', 'cu128'], default='auto',
+                        help='Windows auto packages CUDA 12.8; --torch-runtime cpu builds a smaller CPU component')
     args = parser.parse_args()
+    variant = runtime_variant(args.torch_runtime)
     if not args.skip_install:
         if not PYTHON.exists():
             run("uv", "venv", "--python", "3.12", ENV)
@@ -40,7 +45,7 @@ def main():
             if not source.exists():
                 run("git", "clone", url, source)
             run("git", "-C", source, "checkout", "--detach", revision)
-        run("uv", "pip", "install", "--python", PYTHON, "-r", ROOT / "engine/hybrid-requirements.lock")
+        install_runtime(run, PYTHON, ROOT / 'engine/hybrid-requirements.lock', variant, torchaudio=True)
         run("uv", "pip", "install", "--python", PYTHON, "--no-deps", ROOT / "build/muscriptor-src")
     for name, revision in (("game", GAME_REVISION), ("muscriptor", RUNTIME_REVISION)):
         source = ROOT / f"build/{name}-src"
@@ -50,7 +55,8 @@ def main():
         run("git", "-C", source, "diff", "--exit-code", "HEAD")
     worker = ROOT / "src/autoskyplay/transcription/hybrid_worker.py"
     runtime = dict(
-        version="3.0.0",
+        version=HYBRID_COMPONENT_VERSION,
+        pytorch=inspect_runtime(PYTHON, variant, torchaudio=True),
         game_revision=GAME_REVISION,
         muscriptor_revision=RUNTIME_REVISION,
         process_policy="sequential; separate/game/background/features are separate processes",
@@ -119,6 +125,7 @@ def main():
         shutil.copy2(ROOT / f"build/{name}-src/LICENSE", bundle / f"{name}-LICENSE")
     run(PYTHON, ROOT / "scripts/prepare_transcription.py", "--licenses", bundle / "licenses")
     entry = "AutoSkyPlay-Hybrid" + (".exe" if os.name == "nt" else "")
+    verify_cuda_bundle(bundle, variant)
     run(bundle / entry, "--check")
     files = {}
     for file in sorted(bundle.rglob("*")):
@@ -126,9 +133,11 @@ def main():
             with file.open("rb") as stream:
                 files[file.relative_to(bundle).as_posix()] = hashlib.file_digest(stream, "sha256").hexdigest()
     (bundle / "engine.json").write_text(
-        json.dumps(dict(schema=1, version="3.0.0", platform=platform_tag(), entry=entry, files=files))
+        json.dumps(dict(schema=1, version=HYBRID_COMPONENT_VERSION, platform=platform_tag(), entry=entry, files=files))
     )
-    target = ROOT / "dist" / f"AutoSkyPlay-Hybrid-3.0.0-{platform_tag()}.zip"
+    suffix = f'-{variant}' if variant != 'native' else ''
+    target = ROOT / 'dist' / f'AutoSkyPlay-Hybrid-{HYBRID_COMPONENT_VERSION}-{platform_tag()}{suffix}.zip'
+    target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for file in sorted(bundle.rglob("*")):
             if file.is_file():

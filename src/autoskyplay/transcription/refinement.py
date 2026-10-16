@@ -374,7 +374,7 @@ class CandidateStore:
         matches = []
         for file in self.root.glob('*/candidate.json'):
             try:
-                d = json.loads(file.read_text())
+                d = json.loads(file.read_text(encoding="utf-8"))
                 if d['parent_id'] == parent_id and not d.get('resolved'):
                     matches.append((file.stat().st_mtime_ns, d))
             except (OSError, ValueError, KeyError):
@@ -394,12 +394,12 @@ class CandidateStore:
             raise ValueError('存在边界冲突，不能接受；请扩大选区重新生成')
         drafts = DraftStore(self.directory)
         manifest = self.path(candidate.ident)/'candidate.json'
-        d = json.loads(manifest.read_text())
+        d = json.loads(manifest.read_text(encoding="utf-8"))
         # A retry after publication (including a crash before the resolved write)
         # returns the same child, never another apparently accepted version.
         ident = uuid.uuid5(uuid.NAMESPACE_URL, 'autoskyplay:refinement:'+candidate.ident).hex
         if drafts.path(ident).exists():
-            published = json.loads((drafts.path(ident)/'draft.json').read_text())
+            published = json.loads((drafts.path(ident)/'draft.json').read_text(encoding="utf-8"))
             if published.get('metadata', {}).get('refinement', {}).get('id') != candidate.ident:
                 raise ValueError('新版本 ID 冲突，请重新生成候选')
             d.update(resolved='accepted', child_id=ident)

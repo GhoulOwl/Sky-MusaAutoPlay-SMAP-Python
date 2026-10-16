@@ -10,6 +10,10 @@ import subprocess
 import zipfile
 from pathlib import Path
 
+from torch_runtime import inspect_runtime, install_runtime, runtime_variant, verify_cuda_bundle
+
+from autoskyplay.transcription.engine import MUSCRIPTOR_VERSION
+
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = '7f213afecf23bd6a1b8672aa223690ee9807cefb'
 ENV = ROOT / 'build/muscriptor-venv'
@@ -26,7 +30,9 @@ def main():
     parser.add_argument('--skip-install', action='store_true')
     parser.add_argument('--download', choices=['small', 'medium', 'both'])
     parser.add_argument('--data', type=Path)
+    parser.add_argument('--torch-runtime', choices=['auto', 'cpu', 'cu128'], default='auto')
     args = parser.parse_args()
+    variant = runtime_variant(args.torch_runtime)
     if not args.skip_install:
         if not PYTHON.exists():
             run('uv', 'venv', '--python', '3.12', ENV)
@@ -36,8 +42,9 @@ def main():
         run('git', '-C', source, 'checkout', '--detach', REVISION)
         run('uv', 'pip', 'install', '--python', PYTHON, '--no-deps', source)
         # The library core is deliberately installed without its optional web/beat_this stack.
-        run('uv', 'pip', 'install', '--python', PYTHON, '-r', ROOT/'engine/muscriptor-requirements.lock')
-        (ENV/'runtime.json').write_text(json.dumps(dict(version='2.0.0', revision=REVISION)))
+        install_runtime(run, PYTHON, ROOT/'engine/muscriptor-requirements.lock', variant)
+    (ENV/'runtime.json').write_text(json.dumps(dict(version=MUSCRIPTOR_VERSION, revision=REVISION,
+                                                   pytorch=inspect_runtime(PYTHON, variant))))
     worker = ROOT/'src/autoskyplay/transcription/muscriptor_worker.py'
     run(PYTHON, worker, '--check')
     if args.download:
@@ -62,15 +69,18 @@ def main():
     shutil.copy2(ROOT/'build/muscriptor-src/LICENSE', bundle/'MuScriptor-LICENSE')
     run(PYTHON, ROOT/'scripts/prepare_transcription.py', '--licenses', bundle/'licenses')
     entry = 'AutoSkyPlay-MuScriptor' + ('.exe' if os.name == 'nt' else '')
+    verify_cuda_bundle(bundle, variant)
     run(bundle/entry, '--check')
     files = {}
     for file in sorted(bundle.rglob('*')):
         if file.is_file() and file.name != 'engine.json':
             with file.open('rb') as stream:
                 files[file.relative_to(bundle).as_posix()] = hashlib.file_digest(stream, 'sha256').hexdigest()
-    (bundle/'engine.json').write_text(json.dumps(dict(schema=1, version='2.0.0', platform=platform_tag(),
+    (bundle/'engine.json').write_text(json.dumps(dict(schema=1, version=MUSCRIPTOR_VERSION, platform=platform_tag(),
                                                    entry=entry, files=files)))
-    target = ROOT/'dist'/f'AutoSkyPlay-MuScriptor-2.0.0-{platform_tag()}.zip'
+    suffix = f'-{variant}' if variant != 'native' else ''
+    target = ROOT/'dist'/f'AutoSkyPlay-MuScriptor-{MUSCRIPTOR_VERSION}-{platform_tag()}{suffix}.zip'
+    target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for file in sorted(bundle.rglob('*')):
             if file.is_file():

@@ -1,0 +1,114 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'codex/windows-build-**'
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Windows installer and portable app
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --extra dev
+      - run: uv run pytest -q
+      - name: Build installer
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+          }
+          uv run python scripts/build.py --installer
+          if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
+      - name: Check packaged app
+        shell: pwsh
+        run: |
+          foreach ($screen in @('main', 'transcription')) {
+            $arguments = @('--smoke-test', '--data-dir', "smoke-data-$screen", '--screenshot', "artifacts/$screen-windows.png")
+            if ($screen -eq 'transcription') { $arguments += '--transcribe' }
+            $app = Start-Process -FilePath 'dist/AutoSkyPlay/AutoSkyPlay.exe' -ArgumentList $arguments -PassThru
+            if (!$app.WaitForExit(60000)) {
+              Stop-Process -Id $app.Id -Force
+              throw "Packaged $screen window did not exit"
+            }
+            if ($app.ExitCode -ne 0) { throw "Packaged $screen window failed: $($app.ExitCode)" }
+            if (!(Test-Path "artifacts/$screen-windows.png")) { throw "Missing $screen screenshot" }
+          }
+      - name: Package portable app and checksums
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+          shutil.make_archive('dist/AutoSkyPlay-Windows-x64-portable', 'zip', 'dist', 'AutoSkyPlay')
+          for name in ('AutoSkyPlay-Setup.exe', 'AutoSkyPlay-Windows-x64-portable.zip'):
+              path = Path('dist') / name
+              with path.open('rb') as stream:
+                  digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+              path.with_name(name + '.sha256').write_text(f'{digest}  {name}\n', encoding='utf-8')
+          Path('dist/BUILD-INFO.json').write_text(json.dumps({
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'commit': os.environ['GITHUB_SHA'],
+              'ref': os.environ['GITHUB_REF'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'platform': 'windows-x64',
+          }, indent=2), encoding='utf-8')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoSkyPlay-Windows-x64
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            dist/AutoSkyPlay-Setup.exe
+            dist/AutoSkyPlay-Setup.exe.sha256
+            dist/AutoSkyPlay-Windows-x64-portable.zip
+            dist/AutoSkyPlay-Windows-x64-portable.zip.sha256
+            dist/BUILD-INFO.json
+            artifacts/*-windows.png
+
+  transcription:
+    name: Windows ${{ matrix.component }} CUDA runtime
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [hybrid, muscriptor]
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run python scripts/prepare_${{ matrix.component }}.py --package --torch-runtime cu128
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoSkyPlay-${{ matrix.component }}-Windows-x64-cu128
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            dist/*-windows-x64-cu128.zip
+            dist/*-windows-x64-cu128.zip.sha256

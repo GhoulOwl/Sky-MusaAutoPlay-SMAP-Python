@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -21,6 +22,22 @@ from .melody import MelodyNote, PitchResult
 AUDIO_FILES = ('original.wav', 'vocals.wav', 'other.wav', 'bass.wav', 'drums.wav', 'background.wav')
 
 
+def creation_time(data, directory):
+    """Legacy drafts have no creation field; never use mutable file mtime/ctime."""
+    created = data.get('created')
+    if isinstance(created, (int, float)) and math.isfinite(created) and created > 0:
+        return created
+    updated = float(data['updated'])
+    if not math.isfinite(updated) or updated <= 0:
+        raise ValueError('草稿时间无效')
+    # Directory birth time survives atomic draft.json replacements on macOS and
+    # Windows. Copies may be newer than the draft, so cap it at the saved date.
+    birth = getattr(directory.stat(), 'st_birthtime', None)
+    data['created'] = min(birth, updated) if birth and math.isfinite(birth) and birth > 0 else updated
+    data['created_estimated'] = True
+    return data['created']
+
+
 class DraftStore:
     def __init__(self, directory):
         self.root = Path(directory) / 'transcription' / 'drafts'
@@ -37,10 +54,19 @@ class DraftStore:
             try:
                 data = json.loads(path.read_text('utf-8'))
                 if self.path(data['id']) == path.parent and data['schema'] == 1:
+                    self._ensure_created(path, data)
                     entries.append(data)
             except (OSError, ValueError, KeyError, TypeError):
                 continue
-        return sorted(entries, key=lambda d: d['updated'], reverse=True)
+        return sorted(entries, key=lambda d: (d['created'], d['id']), reverse=True)
+
+    def _ensure_created(self, path, data):
+        old = data.get('created')
+        if creation_time(data, path.parent) != old:
+            # Persist once, while preserving the independent audio-cache LRU.
+            stat = path.stat()
+            atomic_json(path, data)
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
     def save(self, ident, song, result, score, params, *, edited=False, saved=False, media=None, source=None, title=None):
         ident = ident or uuid.uuid4().hex
@@ -81,8 +107,12 @@ class DraftStore:
         old = {}
         if (directory / 'draft.json').exists():
             old = json.loads((directory / 'draft.json').read_text('utf-8'))
+        now = time.time()
+        created = creation_time(old, directory) if old else now
         data = dict(schema=1, result_type='events' if isinstance(result, EventResult) else 'midi' if isinstance(result, MidiResult) else 'audio',
-                    title=title or old.get('title', score.name if score else song.name), id=ident, updated=time.time(), song=asdict(song), metadata=result.metadata,
+                    title=title or old.get('title', score.name if score else song.name), id=ident,
+                    created=created, created_estimated=old.get('created_estimated', False), updated=now,
+                    song=asdict(song), metadata=result.metadata,
                     params=params, edited=edited, saved=saved, score=score.to_data() if score else None)
         atomic_json(directory / 'draft.json', data)
         return ident
@@ -92,6 +122,7 @@ class DraftStore:
         data = json.loads((directory / 'draft.json').read_text('utf-8'))
         if data.get('schema') != 1:
             raise ValueError('草稿版本不支持')
+        self._ensure_created(directory / 'draft.json', data)
         if data.get('result_type') == 'events':
             result = EventResult.load(directory / 'events.json', data['metadata'])
         elif data.get('result_type') == 'midi':
@@ -113,6 +144,7 @@ class DraftStore:
             raise ValueError('草稿名称需为 1—120 个字符')
         path = self.path(ident) / 'draft.json'
         data = json.loads(path.read_text('utf-8'))
+        creation_time(data, path.parent)
         data['title'] = title
         if data.get('score'):
             data['score'][0]['name'] = title

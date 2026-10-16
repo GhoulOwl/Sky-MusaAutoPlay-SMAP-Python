@@ -51,7 +51,7 @@ def run(args):
     from lib.config.schema import InferenceConfig, ModelConfig
 
     work = Path(args.work)
-    request = json.loads((work / "request.json").read_text())
+    request = json.loads((work / "request.json").read_text(encoding="utf-8"))
     settings = dict(
         boundary_threshold=0.2,
         presence_threshold=0.2,
@@ -75,11 +75,10 @@ def run(args):
     torch.set_num_threads(4)
     torch.manual_seed(settings["seed"])
     np.random.seed(settings["seed"])
-    device = args.device
-    if device == "auto":
-        # CPU is the conservative initial contract; MPS is explicitly selectable
-        # for compatibility probes. This is recorded, never a failure fallback.
-        device = "cpu"
+    from autoskyplay.transcription.devices import select_device
+
+    device, device_selection = select_device(
+        torch, args.device, notice=lambda message: emit('notice', message=message))
     audio, sr = sf.read(work / "vocals.wav", dtype="float32", always_2d=True)
     if sr != 44100 or not np.isfinite(audio).all() or not 0.1 <= len(audio) / sr <= 600:
         raise ValueError("GAME 输入必须是所选范围内的 44.1 kHz 有限浮点人声")
@@ -101,7 +100,7 @@ def run(args):
         model.load_state_dict(state, strict=True)
         del state, checkpoint
         model = model.eval().to(device)
-        language = json.loads((path.parent / "lang_map.json").read_text()).get(settings["language"])
+        language = json.loads((path.parent / "lang_map.json").read_text(encoding="utf-8")).get(settings["language"])
         if language is None:
             raise ValueError("GAME 语言配置无效")
         loaded = time.perf_counter()
@@ -238,6 +237,7 @@ def run(args):
         input_sha256=digest(work / "vocals.wav"),
         audio_source="vocals",
         device=device,
+        device_selection=device_selection,
         torch=torch.__version__,
         numpy=np.__version__,
         seed=settings["seed"],

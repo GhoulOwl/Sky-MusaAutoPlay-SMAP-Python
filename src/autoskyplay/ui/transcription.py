@@ -7,6 +7,7 @@ import copy
 import hashlib
 import queue
 import shutil
+import sys
 import threading
 from pathlib import Path
 
@@ -43,8 +44,14 @@ from ..playback import Player, State
 from ..transcription.arrangement import SOURCE_NAMES, arrange, build_score
 from ..transcription.cache import DownloadCache
 from ..transcription.drafts import DraftStore
+from ..transcription.engine import (
+    HYBRID_COMPONENT_VERSION,
+    MUSCRIPTOR_VERSION,
+    install_engine,
+    select_engine,
+    select_hybrid_engine,
+)
 from ..transcription.engine import find_engine as find_runtime
-from ..transcription.engine import install_engine, select_engine, select_hybrid_engine
 from ..transcription.events import EventResult
 from ..transcription.local import MidiResult, read_midi
 from ..transcription.melody import export_midi
@@ -294,8 +301,8 @@ class TranscriptionDialog(ServiceDialog):
         settings.setSpacing(6)
         settings.addWidget(label("曲谱生成参数", "brand"))
         self.backend_choice = QComboBox()
-        self.backend_choice.addItem('MuScriptor 原混音 · 默认', 'muscriptor')
-        self.backend_choice.addItem('Demucs＋GAME＋MuScriptor · 实验', 'hybrid')
+        self.backend_choice.addItem('Demucs＋GAME＋MuScriptor · 默认', 'hybrid')
+        self.backend_choice.addItem('MuScriptor 原混音', 'muscriptor')
         self.backend_choice.setToolTip('混合后端使用 GAME medium 识别人声、MuScriptor 识别背景；更耗时，效果需按歌曲复核。')
         settings.addWidget(self.backend_choice)
         self.model_choice = QComboBox()
@@ -306,9 +313,11 @@ class TranscriptionDialog(ServiceDialog):
         self.device_choice = QComboBox()
         self.device_choice.addItem('自动选择加速设备', 'auto')
         self.device_choice.addItem('CPU（兼容模式）', 'cpu')
+        self.device_choice.setToolTip('Windows 优先使用可用的 NVIDIA CUDA GPU，不可用时使用 CPU。需要新版 CUDA 运行组件。')
         settings.addWidget(self.device_choice)
         self.model_choice.currentIndexChanged.connect(self.update_engine)
         self.backend_choice.currentIndexChanged.connect(self.update_engine)
+        self.device_choice.currentIndexChanged.connect(self.update_engine)
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.setVerticalSpacing(8)
@@ -471,8 +480,11 @@ class TranscriptionDialog(ServiceDialog):
     def update_engine(self):
         try:
             if self.backend_choice.currentData() == 'hybrid':
-                select_hybrid_engine(self.host.store.directory, self.model_choice.currentData(), self.device_choice.currentData())
-                self.engine_status.setText(f'混合实验 · GAME medium / MuScriptor {self.model_choice.currentData()} · 就绪')
+                engine = select_hybrid_engine(self.host.store.directory, self.model_choice.currentData(), self.device_choice.currentData())
+                suffix = '就绪'
+                if sys.platform == 'win32' and not engine.config.get('accelerated_stages', True):
+                    suffix = f'旧组件：升级至 {HYBRID_COMPONENT_VERSION} 可启用全阶段 CUDA'
+                self.engine_status.setText(f'GAME medium / MuScriptor {self.model_choice.currentData()} · {suffix}')
                 return
             engine = find_engine(self.host.store.directory)
             size = self.model_choice.currentData()
@@ -885,7 +897,7 @@ class TranscriptionDialog(ServiceDialog):
             return
         try:
             if self.backend_choice.currentData() != 'hybrid' and not find_engine(self.host.store.directory):
-                raise ValueError('请先导入本机平台的 MuScriptor 2.0.0 运行组件包')
+                raise ValueError(f'请先导入本机平台的 MuScriptor {MUSCRIPTOR_VERSION} 运行组件包')
             selector = select_hybrid_engine if self.backend_choice.currentData() == 'hybrid' else select_engine
             engine = selector(self.host.store.directory, self.model_choice.currentData(), self.device_choice.currentData())
             start, length = self.start_time.value(), self.length.value()
@@ -1176,10 +1188,12 @@ class TranscriptionDialog(ServiceDialog):
             end = start + entry['metadata'].get('requested_length', 0)
             state = '已保存到曲库' if entry['saved'] else '已编辑' if entry['edited'] else '已生成'
             from datetime import datetime
-            date = datetime.fromtimestamp(entry['updated']).strftime('%m-%d %H:%M')
+            date = datetime.fromtimestamp(entry['created']).strftime('%m-%d %H:%M')
             item = QListWidgetItem(f"{title}\n{clock_text(start)}—{clock_text(end)}\n{state} · {date}")
             item.setData(Qt.ItemDataRole.UserRole, entry['id'])
-            item.setToolTip(song['name'] + ' · ' + song['artists'])
+            item.setToolTip(song['name'] + ' · ' + song['artists'] + '\n首次生成：' +
+                            datetime.fromtimestamp(entry['created']).strftime('%Y-%m-%d %H:%M:%S') +
+                            ('（旧草稿推定时间）' if entry.get('created_estimated') else ''))
             score_data = entry.get('score')
             if score_data:
                 cover = score_data[0].get('cover', '')

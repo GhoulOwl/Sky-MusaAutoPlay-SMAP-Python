@@ -68,6 +68,11 @@ GAME 1.0 medium 权重从作者的
 `engine/models.json`。torchcrepe 随包提供由原 CREPE 权重转换的 full/tiny 模型。
 相关来源、模型说明与已安装依赖的许可证随组件包保存。
 
+Windows Hybrid / MuScriptor 组件使用 PyTorch 官方 2.8.0 + cu128 发行包，
+混合组件搭配同版本 TorchAudio。随 wheel 提供的 NVIDIA CUDA、cuBLAS、cuDNN 等运行库
+保留各自许可证；构建脚本收集 wheel 内的 LICENSE/COPYING/NOTICE，随组件 `licenses/` 分发。
+来源与构建选择见 [PyTorch 官方版本说明](https://pytorch.org/get-started/previous-versions/#v280)。
+
 解码使用 imageio-ffmpeg 0.6.0 随包 FFmpeg 二进制，其源代码和构建说明见
 [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) 与
 [FFmpeg 构建项目](https://github.com/BtbN/FFmpeg-Builds)。FFmpeg 许可证以对应发行构建为准；

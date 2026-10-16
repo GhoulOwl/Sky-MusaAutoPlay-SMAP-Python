@@ -114,6 +114,8 @@ def test_hallucinated_events_in_silence_do_not_become_lead():
 def test_model_ui_defaults_and_native_confidence_hidden(qtbot, tmp_path, monkeypatch):
     from test_transcription_ui import window_and_dialog
     window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    assert dialog.backend_choice.currentData() == 'hybrid'
+    assert dialog.device_choice.currentData() == 'auto'
     assert dialog.model_choice.currentData() == 'small'
     assert not dialog.threshold.isEnabled()
     dialog.result = native([ModelNote(67,0,2000,'voice',1)], 3000)

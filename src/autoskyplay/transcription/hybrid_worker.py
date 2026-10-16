@@ -36,8 +36,11 @@ def main():
         from inference.me_infer import SegmentationEstimationInferenceModel
         from muscriptor import TranscriptionModel
 
+        from autoskyplay.transcription.engine import HYBRID_COMPONENT_VERSION
+
         assert callable(TranscriptionModel.load_model) and callable(SegmentationEstimationInferenceModel)
-        emit("ready", engine="3.0.0", torch=torch.__version__, demucs=demucs.__version__)
+        emit("ready", engine=HYBRID_COMPONENT_VERSION, torch=torch.__version__, demucs=demucs.__version__,
+             cuda_runtime=torch.version.cuda, cuda_available=torch.cuda.is_available())
         return
     if not args.work or not args.models or not args.stage:
         parser.error("--work, --models and --stage are required")
@@ -62,11 +65,12 @@ def main():
         import traceback
 
         traceback.print_exc(file=sys.stderr)
+        message = str(exc) if isinstance(exc, ValueError) else '混合后端阶段失败，详见阶段日志'
+        if isinstance(exc, MemoryError) or 'out of memory' in str(exc).lower():
+            message = '内存或显存不足，请选择 small、较短片段或 CPU 后重试；本次未保存不完整结果'
         emit(
             "error",
-            message=str(exc)
-            if isinstance(exc, ValueError)
-            else "混合后端阶段失败，未自动更换设备、模型或填入休止；详见阶段日志",
+            message=message,
         )
         sys.exit(1)
 

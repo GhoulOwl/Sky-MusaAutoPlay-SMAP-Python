@@ -1,4 +1,4 @@
-"""Standalone CPU worker, also frozen as the optional offline engine executable."""
+"""Standalone separation worker, also frozen as an optional offline executable."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def watch_parent(pid):
 
 
 def verify_models(directory):
-    manifest = json.loads((directory / "models.json").read_text())
+    manifest = json.loads((directory / "models.json").read_text(encoding="utf-8"))
     for name, expected in manifest["files"].items():
         path = directory / name
         if path.parent != directory or not path.is_file():
@@ -61,6 +61,8 @@ def verify_models(directory):
 
 def run(args):
     global decoder_process
+    if not getattr(sys, 'frozen', False):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     if getattr(args, 'pitch_only', False):
         if not getattr(sys, 'frozen', False):
             sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -73,14 +75,18 @@ def run(args):
     from demucs.apply import apply_model
     from demucs.hf import load_safetensors_model
 
+    from autoskyplay.transcription.devices import select_device
+
     torch.set_num_threads(min(4, os.cpu_count() or 1))
     torch.manual_seed(0)
     np.random.seed(0)
+    device, device_selection = select_device(
+        torch, getattr(args, 'device', 'cpu'), notice=lambda message: emit('notice', message=message))
     work = Path(args.work).resolve()
     models = Path(args.models).resolve()
     verify_models(models)
     began = time.perf_counter()
-    request = json.loads((work / "request.json").read_text())
+    request = json.loads((work / "request.json").read_text(encoding="utf-8"))
     start, length = float(request["start"]), float(request["length"])
     if not 0 <= start <= 86400 or not 0 < length <= 600:
         raise ValueError("请选择不超过 10 分钟的有效片段")
@@ -105,7 +111,7 @@ def run(args):
     duration = len(original) / sr
     if length - duration > 1:
         emit("notice", message="实际音频短于所选范围，已按可用音频处理")
-    emit("separate", 0)
+    emit("separate", 0, message=f'分离音轨 · {device}')
     load_started = time.perf_counter()
     model = load_safetensors_model(models / "955717e8.safetensors").eval()
     loaded = time.perf_counter()
@@ -130,26 +136,26 @@ def run(args):
 
             with torch.inference_mode():
                 stems = apply_model(model, ((waveform - mean) / scale)[None],
-                                    device="cpu", shifts=0, split=True, segment=4,
+                                    device=device, shifts=0, split=True, segment=4,
                                     overlap=.25, num_workers=0, callback=progress)
                 trim = offset - left
                 count = min(block, len(original) - offset)
                 for name, output in outputs.items():
                     stem = stems[0, model.sources.index(name)] * scale + mean
-                    output.write(stem[:, trim:trim + count].numpy().T)
+                    output.write(stem[:, trim:trim + count].cpu().numpy().T)
     inferred = time.perf_counter()
     del model, stems
     if getattr(args, 'separate_only', False):
         import gc
         gc.collect()
         metadata = dict(engine=ENGINE_VERSION, stage='done', progress=100, demucs='4.1.0',
-                        device='cpu', seed=0, demucs_segment_seconds=4, overlap=.25,
+                        device=device, device_selection=device_selection, seed=0, demucs_segment_seconds=4, overlap=.25,
                         outer_seconds=30, margin_seconds=1, sample_rate=sr,
                         duration_ms=duration*1000, separation_seconds=time.perf_counter()-began,
                         load_seconds=loaded-load_started, inference_seconds=inferred-loaded,
                         torch=torch.__version__, numpy=np.__version__,
                         normalization='shared mean/std per outer block; restored float stems',
-                        scale=1, source_models=json.loads((models/'models.json').read_text()))
+                        scale=1, source_models=json.loads((models/'models.json').read_text(encoding="utf-8")))
         (work/'separation.json').write_text(json.dumps(metadata))
         emit('done', **{k:v for k,v in metadata.items() if k not in ('stage','progress')})
         return
@@ -191,6 +197,7 @@ def main():
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--separate-only", action="store_true")
     parser.add_argument("--pitch-only", action="store_true")
+    parser.add_argument("--device", choices=['auto', 'cpu', 'mps', 'cuda'], default='cpu')
     args = parser.parse_args()
     if args.check:
         import demucs

@@ -62,7 +62,7 @@ class ModelStore:
     def installed(self, size):
         path = self.path(size)
         try:
-            receipt = json.loads((path / 'verified.json').read_text())
+            receipt = json.loads((path / 'verified.json').read_text(encoding="utf-8"))
             return receipt['revision'] == self.catalog[size]['revision'] and all(
                 (path / name).stat().st_size == length
                 and (path / name).stat().st_mtime_ns == receipt['files'][name]['mtime_ns']

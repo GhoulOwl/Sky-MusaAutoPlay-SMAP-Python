@@ -179,7 +179,7 @@ def test_component_paths_and_platform_are_checked(tmp_path, extra, tag):
 
 def fake_task(tmp_path, worker):
     script = tmp_path / "worker.py"
-    script.write_text(worker)
+    script.write_text(worker, encoding="utf-8")
     song = NeteaseSong("1", "Example", "Artist", "Album", "")
     audio = NeteaseAudio("1", "https://m1.music.126.net/a", 30000, 10, 40)
 

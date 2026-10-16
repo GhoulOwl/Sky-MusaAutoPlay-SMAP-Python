@@ -1,8 +1,10 @@
 import hashlib
 import io
 import json
+import threading
 import zipfile
 from dataclasses import replace
+from types import SimpleNamespace
 
 import httpx
 import numpy as np
@@ -291,3 +293,58 @@ def test_stem_eviction_protects_live_entry_and_keeps_raw_events_and_models(tmp_p
     clear_hybrid_audio(tmp_path)
     assert not (second.path / "vocals.wav").exists()
     assert all(path.read_bytes() == b"keep" for path in (event, model, source))
+
+
+@pytest.mark.parametrize('accelerated', [True, False])
+def test_hybrid_propagates_device_to_all_stages_and_separates_caches(tmp_path, monkeypatch, accelerated):
+    from autoskyplay.transcription.engine import Engine
+    from autoskyplay.transcription.hybrid import STEMS, run_hybrid
+
+    work = tmp_path/'work'
+    work.mkdir()
+    (work/'source.audio').write_bytes(b'source')
+    (work/'request.json').write_text(json.dumps(dict(start=0, length=1)))
+    models = tmp_path/'models'
+    models.mkdir()
+    (models/'models.json').write_text('{}')
+    calls = []
+
+    def run(engine, folder, extra=()):
+        stage = engine.command[0]
+        calls.append((stage, engine.device))
+        if stage == 'separate':
+            for name in STEMS:
+                sf.write(folder/name, np.zeros((44100, 2)), 44100, subtype='FLOAT')
+            (folder/'separation.json').write_text('{}')
+        elif stage == 'features':
+            (folder/'features.json').write_text(json.dumps(dict(duration_ms=1000, bpm=120,
+                                                               bpm_estimated=False, analysis={})))
+        else:
+            EventResult([], 1000, 120, dict(device=engine.device), {}).save(folder/'events.json')
+        return dict(device=engine.device)
+
+    monkeypatch.setattr('autoskyplay.transcription.hybrid_evidence.annotate_vocal_boundaries', lambda *args: None)
+    task = SimpleNamespace(
+        directory=tmp_path, work=work, cancelled=threading.Event(), check_cancelled=lambda: None,
+        emit=lambda *args, **kwargs: None, _run_engine=run,
+        engine=Engine([], models, 'test', 'hybrid', device='auto',
+                      config=dict(commands={s: [s] for s in ('separate', 'game', 'background', 'features')},
+                                  separation_models=str(models), accelerated_stages=accelerated)))
+    first = run_hybrid(task)
+    expected = 'auto' if accelerated else 'cpu'
+    assert ('separate', expected) in calls and ('game', expected) in calls and ('background', 'auto') in calls
+    calls.clear()
+    assert all(run_hybrid(task).metadata['cache_hits'].values())
+    assert not calls
+    task.engine = replace(task.engine, device='cpu')
+    second = run_hybrid(task)
+    assert ('background', 'cpu') in calls
+    assert not second.metadata['cache_hits']['background']
+    for stage in ('separation', 'game'):
+        assert second.metadata['cache_hits'][stage] == (not accelerated)
+        assert first.metadata['cache_identities'][stage]['identity']['device'] == expected
+    calls.clear()
+    task.engine.config['game_device'] = 'cuda'
+    third = run_hybrid(task)
+    assert calls == [('game', 'cuda')]
+    assert third.metadata['cache_identities']['game']['identity']['device'] == 'cuda'
