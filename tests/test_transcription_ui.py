@@ -45,6 +45,10 @@ def test_trial_range_and_missing_engine_are_clear(qtbot, tmp_path, monkeypatch):
     assert dialog.begin.isEnabled() and "试听" in dialog.song_info.text()
     assert dialog.start_time.value() == 60 and dialog.length.value() == 30
     dialog.start_task()
+    assert dialog.backend_choice.currentData() == 'hybrid'
+    assert 'GAME medium' in dialog.status.text() and dialog.task is None
+    dialog.backend_choice.setCurrentIndex(dialog.backend_choice.findData('muscriptor'))
+    dialog.start_task()
     assert "组件包" in dialog.status.text() and dialog.task is None
     dialog.close()
     window.close()

@@ -26,7 +26,24 @@ jobs:
           uv run python scripts/build.py --installer
       - if: runner.os == 'macOS'
         run: uv run python scripts/build.py
-      - run: uv run python scripts/prepare_transcription.py --package
+      # Windows defaults to cu128 even on a runner without an NVIDIA GPU.
+      - run: uv run python scripts/prepare_hybrid.py --package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoSkyPlay-Hybrid-${{ runner.os }}
+          path: |
+            dist/AutoSkyPlay-Hybrid-*.zip
+            dist/AutoSkyPlay-Hybrid-*.zip.sha256
+      - name: Release hybrid build disk space before building the second runtime
+        shell: python
+        run: |
+          import shutil
+          from pathlib import Path
+          for name in ('hybrid-venv', 'hybrid-dist', 'hybrid-pyinstaller'):
+              shutil.rmtree(Path('build') / name)
+          for path in Path('dist').glob('AutoSkyPlay-Hybrid-*.zip*'):
+              path.unlink()
+      - run: uv run python scripts/prepare_muscriptor.py --package
       - uses: actions/upload-artifact@v4
         with:
           name: AutoSkyPlay-${{ runner.os }}
@@ -34,5 +51,5 @@ jobs:
             dist/AutoSkyPlay-Setup.exe
             dist/AutoSkyPlay.dmg
             dist/AutoSkyPlay/**
-            dist/AutoSkyPlay-Transcription-*.zip
-            dist/AutoSkyPlay-Transcription-*.zip.sha256
+            dist/AutoSkyPlay-MuScriptor-*.zip
+            dist/AutoSkyPlay-MuScriptor-*.zip.sha256

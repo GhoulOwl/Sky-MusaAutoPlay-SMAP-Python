@@ -1,0 +1,359 @@
+{
+  "scope": "synthetic contours only; not real-song accuracy",
+  "cases": [
+    {
+      "name": "steady",
+      "split": "development",
+      "predicted": [
+        [
+          60,
+          0,
+          800
+        ]
+      ],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    },
+    {
+      "name": "dropout",
+      "split": "development",
+      "predicted": [
+        [
+          64,
+          0,
+          350
+        ],
+        [
+          64,
+          380,
+          420
+        ]
+      ],
+      "onset": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6666666666666666,
+        "extra": 1,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0,
+        "extra": 2,
+        "missing": 1
+      }
+    },
+    {
+      "name": "vibrato",
+      "split": "development",
+      "predicted": [],
+      "onset": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0,
+        "extra": 0,
+        "missing": 1
+      },
+      "offset": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0,
+        "extra": 0,
+        "missing": 1
+      }
+    },
+    {
+      "name": "repeated",
+      "split": "development",
+      "predicted": [
+        [
+          60,
+          0,
+          400
+        ],
+        [
+          60,
+          400,
+          400
+        ]
+      ],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    },
+    {
+      "name": "breath",
+      "split": "development",
+      "predicted": [
+        [
+          64,
+          0,
+          400
+        ],
+        [
+          64,
+          550,
+          400
+        ]
+      ],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    },
+    {
+      "name": "fast",
+      "split": "development",
+      "predicted": [
+        [
+          60,
+          0,
+          100
+        ],
+        [
+          62,
+          100,
+          100
+        ],
+        [
+          64,
+          200,
+          100
+        ],
+        [
+          65,
+          300,
+          100
+        ],
+        [
+          67,
+          400,
+          200
+        ]
+      ],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    },
+    {
+      "name": "octave_leap",
+      "split": "validation",
+      "predicted": [
+        [
+          60,
+          0,
+          300
+        ],
+        [
+          72,
+          300,
+          500
+        ]
+      ],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    },
+    {
+      "name": "quiet_phrase",
+      "split": "validation",
+      "predicted": [
+        [
+          60,
+          0,
+          400
+        ],
+        [
+          64,
+          1000,
+          400
+        ]
+      ],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    },
+    {
+      "name": "held_tail",
+      "split": "validation",
+      "predicted": [
+        [
+          69,
+          100,
+          780
+        ],
+        [
+          69,
+          900,
+          300
+        ]
+      ],
+      "onset": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6666666666666666,
+        "extra": 1,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0,
+        "extra": 2,
+        "missing": 1
+      }
+    },
+    {
+      "name": "rest_repeated",
+      "split": "validation",
+      "predicted": [
+        [
+          67,
+          50,
+          350
+        ],
+        [
+          67,
+          470,
+          350
+        ]
+      ],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    },
+    {
+      "name": "silence_noise",
+      "split": "validation",
+      "predicted": [],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    },
+    {
+      "name": "short_ornament",
+      "split": "validation",
+      "predicted": [
+        [
+          60,
+          0,
+          300
+        ],
+        [
+          62,
+          300,
+          90
+        ],
+        [
+          64,
+          390,
+          400
+        ]
+      ],
+      "onset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      },
+      "offset": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "extra": 0,
+        "missing": 0
+      }
+    }
+  ],
+  "macro_f1": 0.75
+}

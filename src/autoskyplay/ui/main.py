@@ -866,7 +866,10 @@ class MainWindow(QMainWindow):
                 return
         try:
             if self.mode.checkedId() == 1:
-                output = WindowsOutput(self.store.data["keys"], self.store.data["hold_ms"])
+                from ..audio import SUSTAIN
+                output = WindowsOutput(self.store.data["keys"], self.store.data["hold_ms"],
+                                       sustain=self.store.data.get("sustain_keys", False)
+                                       and self.instrument.currentData() in SUSTAIN)
                 countdown = self.store.data["countdown"]
             else:
                 if not self.ensure_audio():

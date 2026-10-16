@@ -1,4 +1,4 @@
-"""Standalone CPU worker, also frozen as the optional offline engine executable."""
+"""Standalone separation worker, also frozen as an optional offline executable."""
 
 from __future__ import annotations
 
@@ -9,13 +9,18 @@ import os
 import subprocess
 import sys
 import threading
+import time
+from contextlib import ExitStack
 from pathlib import Path
 
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.1.0"
 decoder_process = None
+runtime_profile = None
 
 
 def emit(stage, progress=0, **values):
+    if stage in ('done', 'error') and runtime_profile:
+        values.update(runtime_profile.finish())
     print(json.dumps(dict(stage=stage, progress=progress, **values), ensure_ascii=False), flush=True)
 
 
@@ -56,21 +61,31 @@ def verify_models(directory):
 
 def run(args):
     global decoder_process
+    if not getattr(sys, 'frozen', False):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    if getattr(args, 'pitch_only', False):
+        if not getattr(sys, 'frozen', False):
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from autoskyplay.transcription.legacy_pitch_worker import run as legacy_pitch
+        return legacy_pitch(args)
     import imageio_ffmpeg
-    import librosa
     import numpy as np
     import soundfile as sf
     import torch
-    import torchcrepe
     from demucs.apply import apply_model
     from demucs.hf import load_safetensors_model
+
+    from autoskyplay.transcription.devices import select_device
 
     torch.set_num_threads(min(4, os.cpu_count() or 1))
     torch.manual_seed(0)
     np.random.seed(0)
+    device, device_selection = select_device(
+        torch, getattr(args, 'device', 'cpu'), notice=lambda message: emit('notice', message=message))
     work = Path(args.work).resolve()
     models = Path(args.models).resolve()
     verify_models(models)
+    began = time.perf_counter()
     request = json.loads((work / "request.json").read_text())
     start, length = float(request["start"]), float(request["length"])
     if not 0 <= start <= 86400 or not 0 < length <= 600:
@@ -96,14 +111,19 @@ def run(args):
     duration = len(original) / sr
     if length - duration > 1:
         emit("notice", message="实际音频短于所选范围，已按可用音频处理")
-    emit("separate", 0)
+    emit("separate", 0, message=f'分离音轨 · {device}')
+    load_started = time.perf_counter()
     model = load_safetensors_model(models / "955717e8.safetensors").eval()
+    loaded = time.perf_counter()
     # HTDemucs otherwise pads short inference chunks back to its 7.8 s training
     # length. Its supported variable-length mode bounds CPU activation memory.
     model.use_train_segment = False
     # Outer chunks bound stem allocation; the model uses overlapping inner chunks.
     block, margin = sr * 30, sr
-    with sf.SoundFile(work / "vocals.wav", "w", samplerate=sr, channels=2, subtype="FLOAT") as output:
+    with ExitStack() as stack:
+        outputs = {name: stack.enter_context(sf.SoundFile(work / (name + '.wav'), 'w', samplerate=sr,
+                                                           channels=2, subtype='FLOAT'))
+                   for name in ('vocals', 'other', 'bass', 'drums')}
         for offset in range(0, len(original), block):
             left, right = max(0, offset - margin), min(len(original), offset + block + margin)
             waveform = torch.from_numpy(original[left:right].T.copy())
@@ -116,57 +136,55 @@ def run(args):
 
             with torch.inference_mode():
                 stems = apply_model(model, ((waveform - mean) / scale)[None],
-                                    device="cpu", shifts=0, split=True, segment=4,
+                                    device=device, shifts=0, split=True, segment=4,
                                     overlap=.25, num_workers=0, callback=progress)
-                vocal = stems[0, model.sources.index("vocals")] * scale + mean
                 trim = offset - left
                 count = min(block, len(original) - offset)
-                output.write(vocal[:, trim:trim + count].numpy().T)
+                for name, output in outputs.items():
+                    stem = stems[0, model.sources.index(name)] * scale + mean
+                    output.write(stem[:, trim:trim + count].cpu().numpy().T)
+    inferred = time.perf_counter()
     del model, stems
-    vocals, _ = sf.read(work / "vocals.wav", dtype="float32", always_2d=True)
-    mono = librosa.resample(vocals.mean(axis=1), orig_sr=sr, target_sr=16000)
-    del vocals
-    emit("pitch", 0)
-    frequencies, confidences = [], []
-    # Context is discarded after inference so boundaries do not duplicate notes.
-    hop, block, margin = 160, 16000 * 20, 16000
-    for offset in range(0, len(mono), block):
-        left, right = max(0, offset - margin), min(len(mono), offset + block + margin)
-        with torch.inference_mode():
-            pitch, confidence = torchcrepe.predict(
-                torch.from_numpy(mono[left:right].copy())[None], 16000, hop_length=hop,
-                fmin=60, fmax=1500, model="full", batch_size=32, device="cpu", return_periodicity=True)
-        begin = (offset - left) // hop
-        count = min(block, len(mono) - offset)
-        frames = (count + hop - 1) // hop
-        frequencies.append(pitch[0, begin:begin + frames].numpy())
-        confidences.append(confidence[0, begin:begin + frames].numpy())
-        emit("pitch", min(100, int(100 * (offset + count) / len(mono))))
-    frequency = np.nan_to_num(np.concatenate(frequencies), nan=0, posinf=0, neginf=0)
-    confidence = np.clip(np.nan_to_num(np.concatenate(confidences)), 0, 1)
-    count = len(frequency)
-    energy = librosa.feature.rms(y=mono, frame_length=1024, hop_length=hop)[0]
-    energy = np.pad(energy, (0, max(0, count - len(energy))), mode="edge")[:count]
-    energy_db = 20 * np.log10(np.maximum(energy, 1e-8))
-    onset = np.zeros(count, dtype="float32")
-    attacks = librosa.onset.onset_detect(y=mono, sr=16000, hop_length=hop, backtrack=True)
-    onset[attacks[attacks < count]] = 1
-    emit("convert", 0)
-    bpm = 120.0
-    beat_estimated = False
-    try:
-        tempo, beats = librosa.beat.beat_track(y=original.mean(axis=1), sr=sr)
-        candidate = float(np.asarray(tempo).reshape(-1)[0])
-        if len(beats) >= 4 and 30 <= candidate <= 300:
-            bpm, beat_estimated = candidate, True
-    except (ValueError, IndexError):
-        pass
-    np.savez_compressed(work / "pitch.npz", frequency=frequency, confidence=confidence,
-                        energy_db=energy_db, onset=onset, hop_ms=10,
-                        duration_ms=duration * 1000, bpm=bpm)
-    emit("done", 100, duration_ms=duration * 1000, bpm_estimated=beat_estimated,
-         engine=ENGINE_VERSION, demucs="4.1.0", pitch_model="torchcrepe-full-0.0.24",
-         seed=0, demucs_segment_seconds=4, pitch_batch_size=32)
+    if getattr(args, 'separate_only', False):
+        import gc
+        gc.collect()
+        metadata = dict(engine=ENGINE_VERSION, stage='done', progress=100, demucs='4.1.0',
+                        device=device, device_selection=device_selection, seed=0, demucs_segment_seconds=4, overlap=.25,
+                        outer_seconds=30, margin_seconds=1, sample_rate=sr,
+                        duration_ms=duration*1000, separation_seconds=time.perf_counter()-began,
+                        load_seconds=loaded-load_started, inference_seconds=inferred-loaded,
+                        torch=torch.__version__, numpy=np.__version__,
+                        normalization='shared mean/std per outer block; restored float stems',
+                        scale=1, source_models=json.loads((models/'models.json').read_text()))
+        (work/'separation.json').write_text(json.dumps(metadata))
+        emit('done', **{k:v for k,v in metadata.items() if k not in ('stage','progress')})
+        return
+    from signal_analysis import pitch_track, rhythm_harmony
+
+    tracks = {}
+    for name, low, high in (('vocals', 60, 1500), ('other', 80, 2000), ('bass', 35, 600)):
+        audio, _ = sf.read(work / (name + '.wav'), dtype='float32', always_2d=True)
+        tracks[name] = pitch_track(audio, sr, emit, name, low, high)
+    emit('convert', 0)
+    other, _ = sf.read(work / 'other.wav', dtype='float32', always_2d=True)
+    bass, _ = sf.read(work / 'bass.wav', dtype='float32', always_2d=True)
+    drums, _ = sf.read(work / 'drums.wav', dtype='float32', always_2d=True)
+    analysis, bpm, estimated = rhythm_harmony(original, drums, other + bass, sr, duration)
+    for name in ('other', 'bass'):
+        analysis.update({name + '_' + key: value for key, value in tracks[name].items()})
+    import librosa
+    mono = librosa.resample(original.mean(axis=1), orig_sr=sr, target_sr=16000)
+    energy = librosa.feature.rms(y=mono, frame_length=1024, hop_length=160)[0][:len(tracks['vocals']['frequency'])]
+    analysis['mix_energy_db'] = 20 * np.log10(np.maximum(energy, 1e-8))
+    for name in ('vocal', 'other'):
+        source = tracks['vocals' if name == 'vocal' else name]['energy_db']
+        analysis[name + '_ratio'] = np.clip(10 ** ((source - analysis['mix_energy_db']) / 20), 0, 1)
+    np.savez_compressed(work / 'pitch.npz', **tracks['vocals'],
+                        **{'a_' + key: value for key, value in analysis.items()},
+                        hop_ms=10, duration_ms=duration * 1000, bpm=bpm)
+    emit('done', 100, duration_ms=duration * 1000, bpm_estimated=estimated,
+         engine=ENGINE_VERSION, analysis_version=2, demucs='4.1.0', pitch_model='torchcrepe-full-0.0.24',
+         instrument_method='dominant-pitch-conservative', seed=0, demucs_segment_seconds=4, pitch_batch_size=32)
 
 
 def main():
@@ -177,12 +195,17 @@ def main():
     parser.add_argument("--models")
     parser.add_argument("--parent", type=int, default=0)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--separate-only", action="store_true")
+    parser.add_argument("--pitch-only", action="store_true")
+    parser.add_argument("--device", choices=['auto', 'cpu', 'mps', 'cuda'], default='cpu')
     args = parser.parse_args()
     if args.check:
         import demucs
         import imageio_ffmpeg
         import torchcrepe
+        from signal_analysis import pitch_track, rhythm_harmony
 
+        assert callable(pitch_track) and callable(rhythm_harmony)
         emit("ready", engine=ENGINE_VERSION, demucs=demucs.__version__,
              ffmpeg=Path(imageio_ffmpeg.get_ffmpeg_exe()).is_file(), pitch_model=torchcrepe.__name__)
         return
@@ -192,6 +215,8 @@ def main():
     try:
         run(args)
     except Exception as exc:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         if isinstance(exc, MemoryError) or "out of memory" in str(exc).lower():
             message = "本机内存不足，请关闭其他程序或选择更短的片段"
         elif isinstance(exc, ValueError):

@@ -111,6 +111,7 @@ class Voice:
     loop: bool = False
     position: int = 0
     release_frames: int | None = None
+    remaining_frames: int | None = None
 
 
 class Mixer:
@@ -160,9 +161,20 @@ class Mixer:
             samples = self.cache.get((self.instrument, self.pitch))
             if samples is None:
                 return
-            for key in keys:
-                self.voices.append(Voice(samples[key][0], key))
+            for i, key in enumerate(keys):
+                duration = durations[i] if i < len(durations) else 0
+                if self.instrument in SUSTAIN and duration > 0:
+                    self.note_off(key)
+                    self.voices.append(Voice(samples[key][1], key, loop=True,
+                                             remaining_frames=max(1, round(duration * SAMPLE_RATE / 1000))))
+                else:
+                    self.voices.append(Voice(samples[key][0], key))
             self.voices = self.voices[-96:]
+
+    def restore(self, keys: tuple[int, ...], durations: tuple[float, ...]):
+        # Seeking must not add a fresh attack to a plucked/decaying instrument.
+        if self.instrument in SUSTAIN:
+            self.trigger(keys, durations)
 
     def note_on(self, key: int):
         with self.lock:
@@ -206,6 +218,11 @@ class Mixer:
                     block = np.zeros((frames, 2), np.float32)
                     block[:count] = voice.data[voice.position : voice.position + count]
                     voice.position += count
+                if voice.remaining_frames is not None:
+                    # Sample-clock release: invariant to audio callback block size.
+                    gain = np.clip((voice.remaining_frames + 1500 - np.arange(frames)) / 1500, 0, 1)
+                    block *= gain[:, None]
+                    voice.remaining_frames -= frames
                 if voice.release_frames is not None:
                     gain = np.clip((voice.release_frames - np.arange(frames)) / 1500, 0, 1)
                     block *= gain[:, None]
@@ -213,7 +230,7 @@ class Mixer:
                 output += block
                 if (voice.loop or voice.position < len(voice.data)) and (
                     voice.release_frames is None or voice.release_frames > 0
-                ):
+                ) and (voice.remaining_frames is None or voice.remaining_frames > -1500):
                     alive.append(voice)
             self.voices = alive
             if self.cave:

@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "description": "Deterministic note-boundary references, not a real-song accuracy benchmark. Times in ms; split=validation is held out from parameter selection.",
+  "cases": [
+    {"name":"steady","split":"development","duration":1000,"notes":[[60,0,800]]},
+    {"name":"dropout","split":"development","duration":1000,"notes":[[64,0,800]],"dropouts":[[350,380]]},
+    {"name":"vibrato","split":"development","duration":1200,"notes":[[67,0,1000]],"vibrato":0.65},
+    {"name":"repeated","split":"development","duration":1000,"notes":[[60,0,400],[60,400,400]]},
+    {"name":"breath","split":"development","duration":1200,"notes":[[64,0,400],[64,550,400]]},
+    {"name":"fast","split":"development","duration":1000,"notes":[[60,0,100],[62,100,100],[64,200,100],[65,300,100],[67,400,200]]},
+    {"name":"octave_leap","split":"validation","duration":1000,"notes":[[60,0,300],[72,300,500]]},
+    {"name":"quiet_phrase","split":"validation","duration":1600,"notes":[[60,0,400],[64,1000,400]],"quiet_after":900},
+    {"name":"held_tail","split":"validation","duration":1400,"notes":[[69,100,1100]],"dropouts":[[880,900]]},
+    {"name":"rest_repeated","split":"validation","duration":1200,"notes":[[67,50,350],[67,470,350]]},
+    {"name":"silence_noise","split":"validation","duration":1000,"notes":[],"silent_confidence":0.95},
+    {"name":"short_ornament","split":"validation","duration":1000,"notes":[[60,0,300],[62,300,90],[64,390,400]]}
+  ]
+}

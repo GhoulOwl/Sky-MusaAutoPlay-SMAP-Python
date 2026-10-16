@@ -42,10 +42,10 @@ def read_midi(path, tracks=None, start=0, length=600):
                 active[key].append(last)
             elif active[key]:
                 begin = active[key].popleft()
-                all_notes.append(MelodyNote(message.note, begin, max(1, last - begin), 1))
+                all_notes.append(MelodyNote(message.note, begin, max(1, last - begin), 1, source=f"midi:{i + 1}"))
         for (_, pitch), begins in active.items():
             for begin in begins:
-                all_notes.append(MelodyNote(pitch, begin, max(20, last - begin), 1))
+                all_notes.append(MelodyNote(pitch, begin, max(20, last - begin), 1, source=f"midi:{i + 1}"))
     duration = max(max((n.start_ms + n.duration_ms for n in all_notes), default=0),
                    max((importer.tick_ms(events[-1][0]) for events in importer.events if events), default=0))
     if not all_notes or not 0 < duration <= 86400000 or len(all_notes) > 100000:
@@ -57,7 +57,7 @@ def read_midi(path, tracks=None, start=0, length=600):
     for note in all_notes:
         begin, end = max(low, note.start_ms), min(high, note.start_ms + note.duration_ms)
         if end > begin:
-            notes.append(MelodyNote(note.pitch, begin - low, end - begin, 1))
+            notes.append(MelodyNote(note.pitch, begin - low, end - begin, 1, source=note.source))
     result = MidiResult(sorted(notes, key=lambda n: (n.start_ms, n.pitch)), high - low, 60_000_000 / importer.tempos[max(0, bisect_right(importer.tempo_ms, low) - 1)],
                         dict(source='midi', source_name=path.name, source_start=start,
                              requested_length=(high - low) / 1000, tracks=sorted(selected), bpm_estimated=False))

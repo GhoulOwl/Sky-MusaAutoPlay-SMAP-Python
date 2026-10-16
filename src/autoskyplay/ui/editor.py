@@ -65,7 +65,7 @@ class NoteItem(QGraphicsRectItem):
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor(style.colors["accent"]))
+        painter.setBrush(QColor(style.colors["muted" if self.note.extra.get("role") == "accompaniment" else "accent"]))
         painter.setPen(QPen(QColor(style.colors["text"] if self.isSelected() else style.colors["ink"]),
                             2 if self.isSelected() else 1))
         painter.drawRoundedRect(self.rect(), 3, 3)

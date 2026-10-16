@@ -34,6 +34,7 @@ class Store:
             "cave": False,
             "countdown": 3,
             "hold_ms": 25,
+            "sustain_keys": False,
             "keys": list(DEFAULT_KEYS),
             "collections": [{"name": "我的收藏", "files": []}],
             "queue": [],

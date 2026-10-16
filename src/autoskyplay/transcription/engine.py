@@ -11,12 +11,29 @@ import stat
 import sys
 import uuid
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from ..score import atomic_json
 
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.1.0"
+MUSCRIPTOR_VERSION = '2.1.0'
+HYBRID_COMPONENT_VERSION = '3.1.0'
+COMPONENT_BACKENDS = {'2.0.0': 'muscriptor', MUSCRIPTOR_VERSION: 'muscriptor',
+                      '3.0.0': 'hybrid', HYBRID_COMPONENT_VERSION: 'hybrid'}
+SUPPORTED_VERSIONS = {"1.0.0", ENGINE_VERSION, *COMPONENT_BACKENDS}
+
+
+def source_runtime_identity(*runtime_files):
+    """Invalidate development caches for worker, device-policy or environment changes."""
+    digest = hashlib.sha256()
+    for path in sorted(Path(__file__).parent.glob('*.py')):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    for path in runtime_files:
+        if path.is_file():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def platform_tag():
@@ -39,10 +56,56 @@ class Engine:
     command: list[str]
     models: Path
     version: str = ENGINE_VERSION
+    backend: str = 'legacy'
+    model: str = 'small'
+    device: str = 'auto'
+    config: dict = field(default_factory=dict)
 
 
-def find_engine(directory: Path) -> Engine | None:
+def select_hybrid_engine(directory, model='small', device='auto', background_mix='with_drums'):
+    """Choose the separate component without changing the original-mix backend."""
+    from dataclasses import replace
+
+    from .game_models import GameModelStore
+    from .models import ModelStore
+    if model not in ('small', 'medium') or background_mix not in ('with_drums', 'without_drums'):
+        raise ValueError('混合后端配置无效')
+    if device not in ('auto', 'cpu', 'mps', 'cuda'):
+        raise ValueError('设备设置无效')
+    if not ModelStore(directory).installed(model) or not GameModelStore(directory).installed('medium'):
+        raise ValueError('请先安装 MuScriptor 和 GAME medium 模型')
+    installed = find_engine(directory, 'hybrid')
+    if installed:
+        return replace(installed, model=model, device=device,
+                       config=dict(installed.config, background_mix=background_mix))
+    if getattr(sys, 'frozen', False):
+        raise ValueError(f'请先导入混合后端 {HYBRID_COMPONENT_VERSION} 运行组件包')
+    root = Path(__file__).resolve().parents[3]
+    suffix = 'Scripts/python.exe' if os.name == 'nt' else 'bin/python'
+    commands = {
+        'separate': [str(root/'.transcription-venv'/suffix), str(Path(__file__).with_name('worker.py'))],
+        'game': [str(root/'build/game-venv'/suffix), str(Path(__file__).with_name('game_worker.py'))],
+        'background': [str(root/'build/muscriptor-venv'/suffix), str(Path(__file__).with_name('muscriptor_worker.py'))],
+    }
+    unified = root/'build/hybrid-venv'/suffix
+    runtime_files = [root/'build/hybrid-venv/runtime.json']
+    if unified.is_file() and runtime_files[0].is_file():
+        commands = {name: [str(unified), str(Path(__file__).with_name('hybrid_worker.py')), '--stage', name]
+                    for name in ('separate', 'game', 'background', 'features')}
+    else:
+        runtime_files += [root/'build/muscriptor-venv/runtime.json', root/'build/game-venv/runtime.json']
+    if any(not Path(c[0]).is_file() for c in commands.values()):
+        raise ValueError('混合运行环境尚未安装')
+    return Engine([], (directory/'transcription/models').resolve(), HYBRID_COMPONENT_VERSION, 'hybrid', model, device,
+                  dict(commands=commands, separation_models=str(root/'build/transcription-models'),
+                       background_mix=background_mix, accelerated_stages=True,
+                       runtime_identity=source_runtime_identity(*runtime_files)))
+
+
+def find_engine(directory: Path, backend='legacy') -> Engine | None:
     base = (directory / "transcription").resolve()
+    if backend in ('muscriptor', 'hybrid'):
+        base /= backend
     pointer = base / "current.json"
     if pointer.exists():
         try:
@@ -51,17 +114,39 @@ def find_engine(directory: Path) -> Engine | None:
                 raise ValueError()
             root = base / "components" / identity
             metadata = json.loads((root / "engine.json").read_text())
-            if metadata["platform"] != platform_tag() or metadata["version"] != ENGINE_VERSION:
+            if metadata["platform"] != platform_tag() or metadata["version"] not in SUPPORTED_VERSIONS:
                 raise ValueError()
             executable = root.joinpath(*relative_file(metadata["entry"]).parts)
             with executable.open("rb") as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != metadata["files"][metadata["entry"]]:
                     raise ValueError()
-            return Engine([str(executable)], root / "models")
+            actual = COMPONENT_BACKENDS.get(metadata['version'], 'legacy')
+            if actual != backend:
+                raise ValueError()
+            if backend == 'hybrid':
+                commands = {name: [str(executable), '--stage', name]
+                            for name in ('separate', 'game', 'background', 'features')}
+                return Engine([str(executable)], (directory/'transcription/models').resolve(),
+                              metadata['version'], backend, config=dict(commands=commands,
+                              runtime_identity=hashlib.sha256((root/'engine.json').read_bytes()).hexdigest(),
+                              separation_models=str(root/'models'), background_mix='with_drums',
+                              accelerated_stages=metadata['version'] != '3.0.0'))
+            return Engine([str(executable)], (directory / 'transcription/models').resolve()
+                          if backend == 'muscriptor' else root / 'models', metadata['version'], backend,
+                          config=dict(runtime_identity=hashlib.sha256((root/'engine.json').read_bytes()).hexdigest()))
         except (OSError, KeyError, TypeError, ValueError):
             raise ValueError("已安装的扒谱组件损坏或版本不匹配，请重新导入组件包") from None
     if not getattr(sys, "frozen", False):
         root = Path(__file__).resolve().parents[3]
+        if backend == 'hybrid':
+            return None  # select_hybrid_engine validates the three development environments.
+        if backend == 'muscriptor':
+            python = root / 'build/muscriptor-venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+            if python.is_file() and (root / 'build/muscriptor-venv/runtime.json').is_file():
+                return Engine([str(python), str(Path(__file__).with_name('muscriptor_worker.py'))],
+                              (directory / 'transcription/models').resolve(), MUSCRIPTOR_VERSION, backend,
+                              config=dict(runtime_identity=source_runtime_identity(root/'build/muscriptor-venv/runtime.json')))
+            return None
         python = root / ".transcription-venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         models = root / "build/transcription-models"
         if python.is_file() and (models / "models.json").is_file():
@@ -85,16 +170,26 @@ def install_engine(archive: Path, directory: Path, cancelled=lambda: False, prog
             if package.getinfo("engine.json").file_size > 8 * 1024 * 1024:
                 raise ValueError("扒谱组件清单过大")
             manifest = json.loads(package.read("engine.json"))
-            if (manifest.get("schema") != 1 or manifest.get("version") != ENGINE_VERSION
+            if (manifest.get("schema") != 1 or manifest.get("version") not in SUPPORTED_VERSIONS
                     or manifest.get("platform") != platform_tag()):
                 raise ValueError("组件版本或平台不匹配，请选择 " + platform_tag() + " 组件包")
+            backend = COMPONENT_BACKENDS.get(manifest['version'], 'legacy')
+            if backend != 'legacy':
+                # A separate pointer leaves the legacy regression engine intact.
+                shutil.rmtree(stage)
+                base /= backend
+                stage = base / 'components' / ('.staging-' + identity)
+                stage.mkdir(parents=True)
             files = manifest.get("files")
             if not isinstance(files, dict) or set(names) != {*files, "engine.json"}:
                 raise ValueError("扒谱组件文件与清单不一致")
             entry = manifest.get("entry", "")
             relative_file(entry)
-            if entry not in files or "models/models.json" not in files:
+            required = 'runtime.json' if backend != 'legacy' else 'models/models.json'
+            if entry not in files or required not in files:
                 raise ValueError("扒谱组件缺少引擎或模型")
+            if backend == 'hybrid' and 'models/models.json' not in files:
+                raise ValueError('混合组件缺少固定分轨模型清单')
             for index, member in enumerate(members):
                 if cancelled():
                     raise ValueError("组件安装已取消")
@@ -118,7 +213,7 @@ def install_engine(archive: Path, directory: Path, cancelled=lambda: False, prog
         destination = stage.with_name(identity)
         stage.rename(destination)
         atomic_json(base / "current.json", {"component": identity})
-        return find_engine(directory)
+        return find_engine(directory, backend)
     except (zipfile.BadZipFile, KeyError, TypeError, json.JSONDecodeError):
         raise ValueError("扒谱组件包格式无效，请选择构建生成的组件 ZIP") from None
     finally:
@@ -128,3 +223,21 @@ def install_engine(archive: Path, directory: Path, cancelled=lambda: False, prog
 def clear_components(directory):
     shutil.rmtree(directory / "transcription" / "components", ignore_errors=True)
     (directory / "transcription" / "current.json").unlink(missing_ok=True)
+    shutil.rmtree(directory / 'transcription/muscriptor/components', ignore_errors=True)
+    (directory / 'transcription/muscriptor/current.json').unlink(missing_ok=True)
+    shutil.rmtree(directory / 'transcription/hybrid/components', ignore_errors=True)
+    (directory / 'transcription/hybrid/current.json').unlink(missing_ok=True)
+
+
+def select_engine(directory, model='small', device='auto'):
+    from dataclasses import replace
+
+    from .models import MODELS, ModelStore
+    if model not in MODELS or device not in ('auto', 'cpu', 'mps', 'cuda'):
+        raise ValueError('模型或设备设置无效')
+    engine = find_engine(directory, 'muscriptor')
+    if not engine:
+        raise ValueError(f'请先导入 MuScriptor {MUSCRIPTOR_VERSION} 运行组件包')
+    if not ModelStore(directory).installed(model):
+        raise ValueError(f'请在设置 → 扒谱模型管理中下载 MuScriptor {model}')
+    return replace(engine, model=model, device=device)

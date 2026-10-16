@@ -73,6 +73,7 @@ def package_engine():
     worker = ROOT / "src/autoskyplay/transcription/worker.py"
     subprocess.run([
         str(PYTHON), "-m", "PyInstaller", "--noconfirm", "--clean", "--console",
+        "--paths", str(worker.parent), "--paths", str(ROOT / 'src'), "--hidden-import", "signal_analysis",
         "--name", "AutoSkyPlay-Transcriber", "--distpath", str(ROOT / "build/transcription-dist"),
         "--workpath", str(ROOT / "build/transcription-pyinstaller"), "--specpath", str(ROOT / "build"),
         "--collect-data", "torchcrepe", "--collect-data", "imageio_ffmpeg",

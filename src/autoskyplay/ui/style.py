@@ -20,7 +20,7 @@ EXTRA = {
         "曲名・作曲者・採譜者を検索…",
     ],
     "import": ["导入曲谱", "匯入曲譜", "Import scores", "曲譜をインポート"],
-    "transcribe": ["在线扒谱", "線上扒譜", "Transcribe song", "楽曲を採譜"],
+    "transcribe": ["AI扒谱", "AI扒譜", "AI transcription", "AI採譜"],
     "create": ["创建曲谱", "建立曲譜", "New score", "曲譜を作成"],
     "practice": ["跟弹练习", "跟彈練習", "Practice", "練習"],
     "queue": ["播放队列", "播放佇列", "Play queue", "再生キュー"],

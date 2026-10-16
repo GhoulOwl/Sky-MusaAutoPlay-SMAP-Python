@@ -171,7 +171,7 @@ class NeteaseSongDialog(ServiceDialog):
     def __init__(self, editor, picker=False):
         super().__init__(editor, editor.host)
         self.picker = picker
-        self.setWindowTitle("选择网易云歌曲" if picker else "从网易云获取")
+        self.setWindowTitle("选择网易云歌曲" if picker else "获取歌曲信息")
         self.resize(810, 530)
         self.selection = None
         self.local_path = None
@@ -181,7 +181,7 @@ class NeteaseSongDialog(ServiceDialog):
         self.query = ""
         root = QVBoxLayout(self)
         title = QHBoxLayout()
-        title.addWidget(label("选择歌曲" if picker else "填写曲名、歌手与专辑封面", "heading"))
+        title.addWidget(label("选择歌曲" if picker else "获取歌曲信息", "heading"))
         title.addStretch()
         if picker:
             self.local_button = QPushButton("本地上传")
@@ -202,9 +202,8 @@ class NeteaseSongDialog(ServiceDialog):
         row.addWidget(self.mode)
         self.input = QLineEdit()
         self.input.setPlaceholderText("粘贴网易云歌曲分享链接或歌曲 ID")
-        self.input.returnPressed.connect(self.lookup)
         row.addWidget(self.input, 1)
-        self.fetch = QPushButton("获取")
+        self.fetch = QPushButton("搜索")
         self.fetch.clicked.connect(self.lookup)
         row.addWidget(self.fetch)
         root.addLayout(row)
@@ -246,13 +245,19 @@ class NeteaseSongDialog(ServiceDialog):
         cancel.clicked.connect(self.reject)
         controls.addWidget(cancel)
         root.addLayout(controls)
+        # Enter has one route through the search button. Other actions must not
+        # become implicit defaults when search is disabled or focus changes.
+        for control in self.findChildren(QPushButton):
+            control.setAutoDefault(False)
+        self.fetch.setDefault(True)
         self.busy = False
+        self.mode.setCurrentIndex(1)
         if picker:
-            self.mode.setCurrentIndex(1)
             self.table.setColumnWidth(0, 48)
             self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
             self.table.setColumnWidth(1, 68)
         self.mode_changed()
+        self.input.setFocus()
 
     def pick_local(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -287,7 +292,6 @@ class NeteaseSongDialog(ServiceDialog):
         self.input.setPlaceholderText(
             "输入歌曲名，可加上歌手名" if self.mode.currentIndex() else "粘贴网易云歌曲分享链接或歌曲 ID"
         )
-        self.fetch.setText("搜索" if self.mode.currentIndex() else "获取并填写")
         self.songs = []
         self.table.setRowCount(0)
         self.offset = self.total = 0
