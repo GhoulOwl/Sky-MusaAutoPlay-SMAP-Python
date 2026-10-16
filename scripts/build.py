@@ -1,6 +1,7 @@
 """Build on the target OS: uv run python scripts/build.py [--installer]."""
 
 import argparse
+import os
 import plistlib
 import shutil
 import subprocess
@@ -56,7 +57,13 @@ def main():
     elif sys.platform == "darwin":
         command.extend(["--osx-bundle-identifier", "org.autoskyplay.desktop"])
     command.append(str(ROOT / "scripts/launcher.py"))
-    subprocess.run(command, cwd=ROOT, check=True)
+    build_env = None
+    if sys.platform == "win32":
+        build_env = os.environ.copy()
+        # Resolve Windows' ICU before same-named DLLs in third-party tool paths.
+        system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        build_env["PATH"] = str(system32) + os.pathsep + os.environ.get("PATH", "")
+    subprocess.run(command, cwd=ROOT, check=True, env=build_env)
     shutil.copy(ROOT / "LICENSE", ROOT / "dist/AutoSkyPlay/LICENSE")
     shutil.copy(ROOT / "THIRD_PARTY_NOTICES.md", ROOT / "dist/AutoSkyPlay/THIRD_PARTY_NOTICES.md")
     if sys.platform == "darwin":
