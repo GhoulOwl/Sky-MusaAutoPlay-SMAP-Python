@@ -109,11 +109,11 @@ def find_engine(directory: Path, backend='legacy') -> Engine | None:
     pointer = base / "current.json"
     if pointer.exists():
         try:
-            identity = json.loads(pointer.read_text())["component"]
+            identity = json.loads(pointer.read_text(encoding="utf-8"))["component"]
             if not isinstance(identity, str) or len(identity) != 32 or any(c not in "0123456789abcdef" for c in identity):
                 raise ValueError()
             root = base / "components" / identity
-            metadata = json.loads((root / "engine.json").read_text())
+            metadata = json.loads((root / "engine.json").read_text(encoding="utf-8"))
             if metadata["platform"] != platform_tag() or metadata["version"] not in SUPPORTED_VERSIONS:
                 raise ValueError()
             executable = root.joinpath(*relative_file(metadata["entry"]).parts)

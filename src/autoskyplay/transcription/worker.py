@@ -49,7 +49,7 @@ def watch_parent(pid):
 
 
 def verify_models(directory):
-    manifest = json.loads((directory / "models.json").read_text())
+    manifest = json.loads((directory / "models.json").read_text(encoding="utf-8"))
     for name, expected in manifest["files"].items():
         path = directory / name
         if path.parent != directory or not path.is_file():
@@ -86,7 +86,7 @@ def run(args):
     models = Path(args.models).resolve()
     verify_models(models)
     began = time.perf_counter()
-    request = json.loads((work / "request.json").read_text())
+    request = json.loads((work / "request.json").read_text(encoding="utf-8"))
     start, length = float(request["start"]), float(request["length"])
     if not 0 <= start <= 86400 or not 0 < length <= 600:
         raise ValueError("请选择不超过 10 分钟的有效片段")
@@ -155,7 +155,7 @@ def run(args):
                         load_seconds=loaded-load_started, inference_seconds=inferred-loaded,
                         torch=torch.__version__, numpy=np.__version__,
                         normalization='shared mean/std per outer block; restored float stems',
-                        scale=1, source_models=json.loads((models/'models.json').read_text()))
+                        scale=1, source_models=json.loads((models/'models.json').read_text(encoding="utf-8")))
         (work/'separation.json').write_text(json.dumps(metadata))
         emit('done', **{k:v for k,v in metadata.items() if k not in ('stage','progress')})
         return

@@ -62,7 +62,7 @@ class StageCache:
 
     def restore(self, work, expected=None):
         try:
-            receipt = json.loads((self.path / "cache.json").read_text())
+            receipt = json.loads((self.path / "cache.json").read_text(encoding="utf-8"))
             if receipt["identity"] != self.identity:
                 return False
             if expected is not None and set(receipt["files"]) != set(expected):
@@ -108,10 +108,10 @@ class StageCache:
 
 def run_hybrid(task):
     config, work, directory = task.engine.config, task.work, task.directory
-    origin = json.loads((work / "request.json").read_text())
+    origin = json.loads((work / "request.json").read_text(encoding="utf-8"))
     source_sha = digest(work / "source.audio", task.cancelled.is_set)
     models = Path(config["separation_models"])
-    model_manifest = json.loads((models / "models.json").read_text())
+    model_manifest = json.loads((models / "models.json").read_text(encoding="utf-8"))
     commands = config["commands"]
     timings, hits, identities, profiles = {}, {}, {}, {}
     # 3.0.0 components predate GPU separation/GAME. Keep their receipts truthful.
@@ -134,7 +134,7 @@ def run_hybrid(task):
                 task.check_cancelled()
                 atomic_json(Path(folder) / profile_file, profile)
                 cache.publish(folder, cached_files)
-        profiles[name] = json.loads((Path(folder) / profile_file).read_text())
+        profiles[name] = json.loads((Path(folder) / profile_file).read_text(encoding="utf-8"))
         timings[name] = time.perf_counter() - started
 
     separation = dict(
@@ -174,7 +174,7 @@ def run_hybrid(task):
         ("features.json",),
         lambda: task._run_engine(Engine(features, models), work),
     )
-    reference = json.loads((work / "features.json").read_text())
+    reference = json.loads((work / "features.json").read_text(encoding="utf-8"))
     game_work = work / "game"
     game_work.mkdir(exist_ok=True)
     copy_file(work / "vocals.wav", game_work / "vocals.wav")

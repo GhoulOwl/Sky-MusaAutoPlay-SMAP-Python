@@ -32,7 +32,7 @@ def run(args):
     from autoskyplay.transcription.models import MODELS, RUNTIME_REVISION, ModelStore
 
     work = Path(args.work)
-    request = json.loads((work / 'request.json').read_text())
+    request = json.loads((work / 'request.json').read_text(encoding="utf-8"))
     start, length = float(request['start']), float(request['length'])
     input_source = request.get('audio_source', 'original')
     if input_source not in ('original', 'background', 'background_no_drums'):

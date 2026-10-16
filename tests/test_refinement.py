@@ -1,5 +1,6 @@
 import copy
 from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -97,6 +98,31 @@ def test_repeated_attacks_and_manual_rest_survive():
     notes = [n for n in c.score.notes if 3000 <= n.time_ms < 6000]
     assert any(n.time_ms == 3000 for n in notes) and any(n.time_ms == 3450 for n in notes)
     assert not any(n.time_ms < 4400 and n.time_ms+n.duration_ms > 3900 for n in notes)
+
+
+def test_refinement_roundtrip_with_legacy_windows_encoding(tmp_path, monkeypatch):
+    read_text = Path.read_text
+
+    def legacy_read(path, encoding=None, errors=None):
+        return read_text(path, encoding=encoding or 'cp1252', errors=errors)
+
+    monkeypatch.setattr(Path, 'read_text', legacy_read)
+    result, score, params = fixture()
+    score.name = '中文草稿'
+    drafts = DraftStore(tmp_path)
+    parent = drafts.save(None, NeteaseSong('1', score.name, '', '', ''), result, score, params)
+    (drafts.path(parent)/'source.audio').write_bytes(b'source')
+    region = Region.create(result, 3000, 6000)
+    local = local_for(result, region, True)
+    candidate = make_candidate(parent, result, score, params, local, region)
+    store = CandidateStore(tmp_path)
+    store.save(candidate, local)
+
+    pending = store.pending(parent)
+    assert pending is not None and pending.score.name == score.name
+    child = store.accept(pending)
+    assert drafts.load(child)[3].name == score.name + ' · 精修'
+    assert store.accept(pending) == child
 
 
 def test_pending_accept_forks_and_stale_rejected(tmp_path):

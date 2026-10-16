@@ -171,7 +171,7 @@ class TranscriptionTask:
                         model_sha256=MODELS[self.engine.model]['files']['model.safetensors'][1],
                         runtime=RUNTIME_REVISION, engine=self.engine.version, device=self.engine.device,
                         worker_identity=self.engine.config.get('runtime_identity'),
-                        request=json.loads((self.work / 'request.json').read_text()),
+                        request=json.loads((self.work / 'request.json').read_text(encoding="utf-8")),
                         decoding='greedy-batch1-prelude-strict-v1')
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         cache = self.directory / 'transcription' / 'results' / (key + '.json')

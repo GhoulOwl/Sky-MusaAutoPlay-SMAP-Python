@@ -51,7 +51,7 @@ def run(args):
     from lib.config.schema import InferenceConfig, ModelConfig
 
     work = Path(args.work)
-    request = json.loads((work / "request.json").read_text())
+    request = json.loads((work / "request.json").read_text(encoding="utf-8"))
     settings = dict(
         boundary_threshold=0.2,
         presence_threshold=0.2,
@@ -100,7 +100,7 @@ def run(args):
         model.load_state_dict(state, strict=True)
         del state, checkpoint
         model = model.eval().to(device)
-        language = json.loads((path.parent / "lang_map.json").read_text()).get(settings["language"])
+        language = json.loads((path.parent / "lang_map.json").read_text(encoding="utf-8")).get(settings["language"])
         if language is None:
             raise ValueError("GAME 语言配置无效")
         loaded = time.perf_counter()
