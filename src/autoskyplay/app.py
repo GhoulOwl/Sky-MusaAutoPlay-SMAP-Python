@@ -84,6 +84,7 @@ def main(argv=None):
     code = app.exec()
     window.player.stop()
     window.pool.waitForDone()
+    window.cover_pool.waitForDone()
     if window.transcription_dialog and window.transcription_dialog.task:
         window.transcription_dialog.task.thread.join(timeout=25)
     window.cloud_client.close()

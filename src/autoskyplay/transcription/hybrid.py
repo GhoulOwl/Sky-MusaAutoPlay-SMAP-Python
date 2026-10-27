@@ -135,6 +135,9 @@ def run_hybrid(task):
                 atomic_json(Path(folder) / profile_file, profile)
                 cache.publish(folder, cached_files)
         profiles[name] = json.loads((Path(folder) / profile_file).read_text(encoding="utf-8"))
+        if hits[name] and name != 'features':
+            from .task import cached_device_event
+            task.emit('device', **cached_device_event(profiles[name], identity.get('device', 'auto'), name))
         timings[name] = time.perf_counter() - started
 
     separation = dict(
@@ -169,7 +172,7 @@ def run_hybrid(task):
     )
     stage(
         "features",
-        dict(stems=stems_pcm, version="hybrid-features-1"),
+        dict(stems=stems_pcm, version="hybrid-features-2"),
         work,
         ("features.json",),
         lambda: task._run_engine(Engine(features, models), work),

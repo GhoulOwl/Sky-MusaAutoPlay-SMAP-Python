@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from ..score import atomic_json
@@ -19,7 +20,20 @@ from .cache import DownloadCache
 from .events import EventResult
 from .melody import PitchResult
 
-STAGES = {"decode", "load", "separate", "pitch", "convert", "notice", "done", "error"}
+STAGES = {"decode", "load", "separate", "pitch", "convert", "notice", "device", "done", "error"}
+
+
+class EngineFailure(ValueError):
+    def __init__(self, message, details):
+        super().__init__(message)
+        self.details = details
+
+
+def cached_device_event(metadata, requested, stage=''):
+    selection = metadata.get('device_selection', {})
+    return dict(requested=requested, actual_device=selection.get('actual_device', metadata.get('device', '未知')),
+                device_selection=selection, cached=True, engine_stage=stage,
+                fallback=metadata.get('device_fallback'))
 
 
 def stop_process(process):
@@ -165,12 +179,13 @@ class TranscriptionTask:
             self.emit("finished")
 
     def _run_muscriptor(self):
+        from .devices import DEVICE_POLICY
         from .models import MODELS, RUNTIME_REVISION, digest
         source_sha = digest(self.work / 'source.audio', self.cancelled.is_set)
         identity = dict(source_sha256=source_sha, model=self.engine.model,
                         model_sha256=MODELS[self.engine.model]['files']['model.safetensors'][1],
                         runtime=RUNTIME_REVISION, engine=self.engine.version, device=self.engine.device,
-                        worker_identity=self.engine.config.get('runtime_identity'),
+                        worker_identity=self.engine.config.get('runtime_identity'), device_policy=DEVICE_POLICY,
                         request=json.loads((self.work / 'request.json').read_text(encoding="utf-8")),
                         decoding='greedy-batch1-prelude-strict-v1')
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -182,6 +197,7 @@ class TranscriptionTask:
                     raise ValueError('缓存版本不匹配')
                 result.metadata['cache_hit'] = True
                 result.save(self.work / 'events.json')
+                self.emit('device', **cached_device_event(result.metadata, self.engine.device, 'MuScriptor'))
                 self.emit('convert', message='复用相同模型、范围与音频的识别结果')
                 return result
             except (OSError, ValueError, KeyError, TypeError):
@@ -204,6 +220,40 @@ class TranscriptionTask:
 
     def _run_engine(self, engine=None, work=None, extra=()):
         engine, work = engine or self.engine, work or self.work
+        try:
+            return self._run_engine_once(engine, work, extra)
+        except EngineFailure as exc:
+            if (engine.device != 'auto' or exc.details.get('error_code') not in
+                    ('accelerator_oom', 'accelerator_incompatible')):
+                raise
+            self.check_cancelled()
+            fallback = dict(from_device=exc.details.get('actual_device'),
+                            reason=exc.details.get('device_error', str(exc)), attempts=1)
+            self.emit('device', requested='auto', actual_device='cpu', cached=False,
+                      engine_stage=engine.backend, fallback=fallback)
+            # Never reuse partial GPU outputs, and never rerun an earlier stage.
+            retry = Path(tempfile.mkdtemp(prefix='.cpu-retry-', dir=work))
+            inputs = ('request.json', 'source.audio', 'vocals.wav')
+            try:
+                for name in inputs:
+                    if (work / name).is_file():
+                        shutil.copyfile(work / name, retry / name)
+                metadata = self._run_engine_once(replace(engine, device='cpu'), retry, extra, fallback=fallback)
+                self.check_cancelled()
+                metadata['device_fallback'] = fallback
+                metadata['requested_device'] = 'auto'
+                if (retry / 'events.json').is_file():
+                    result = EventResult.load(retry / 'events.json')
+                    result.metadata.update(device_fallback=fallback, requested_device='auto')
+                    result.save(retry / 'events.json')
+                for path in retry.iterdir():
+                    if path.is_file() and path.name not in inputs:
+                        shutil.copyfile(path, work / ('cpu-retry.stderr' if path.name == 'engine.stderr' else path.name))
+                return metadata
+            finally:
+                shutil.rmtree(retry, ignore_errors=True)
+
+    def _run_engine_once(self, engine, work, extra=(), *, fallback=None):
         command = [*engine.command, "--work", str(work), "--models", str(engine.models),
                    "--parent", str(os.getpid())]
         if getattr(engine, 'backend', 'legacy') == 'muscriptor':
@@ -249,6 +299,7 @@ class TranscriptionTask:
             reader.start()
             deadline = time.monotonic() + max(1800, self.length_seconds * 12 + 300)
             done, error, eof = None, None, False
+            failure_details = {}
             try:
                 while not eof:
                     self.check_cancelled()
@@ -269,13 +320,19 @@ class TranscriptionTask:
                             done = {k: v for k, v in event.items() if k not in ("stage", "progress")}
                         elif event["stage"] == "error":
                             error = str(event.get("message", "本地引擎运行失败"))[:500]
+                            failure_details = event
                         else:
+                            if event['stage'] == 'device':
+                                event['engine_stage'] = engine.backend
+                                if fallback:
+                                    event.update(requested='auto', fallback=fallback)
                             self.events.put(event)
                     except (ValueError, TypeError):
                         continue
                 code = self.process.wait(timeout=5)
                 if error or code or not done:
-                    raise ValueError(error or "本地扒谱引擎异常退出，请重新安装组件或选择更短片段")
+                    raise EngineFailure(error or "本地扒谱引擎异常退出，请重新安装组件或选择更短片段",
+                                        failure_details)
                 return done
             finally:
                 stop_process(self.process)

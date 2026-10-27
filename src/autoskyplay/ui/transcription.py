@@ -60,6 +60,7 @@ from ..transcription.performance import generation_mode
 from ..transcription.source import AudioSource, load_waveform
 from ..transcription.task import TranscriptionTask
 from . import style
+from .device_status import DeviceStatus
 from .editor import EditorDialog, encode_cover
 from .netease import NeteaseSongDialog, ServiceDialog
 from .transcription_widgets import PreviewRoll, RollKeys, Waveform, clock_text
@@ -313,8 +314,11 @@ class TranscriptionDialog(ServiceDialog):
         self.device_choice = QComboBox()
         self.device_choice.addItem('自动选择加速设备', 'auto')
         self.device_choice.addItem('CPU（兼容模式）', 'cpu')
-        self.device_choice.setToolTip('Windows 优先使用可用的 NVIDIA CUDA GPU，不可用时使用 CPU。需要新版 CUDA 运行组件。')
+        self.device_choice.setToolTip('逐设备验证 CUDA；MuScriptor 可使用 MPS。自动模式的 GPU 故障会用 CPU 重试当前阶段一次。')
         settings.addWidget(self.device_choice)
+        self.device_status = DeviceStatus(self)
+        self.device_status.refresh_button.clicked.connect(lambda: self.refresh_devices(force=True))
+        settings.addWidget(self.device_status)
         self.model_choice.currentIndexChanged.connect(self.update_engine)
         self.backend_choice.currentIndexChanged.connect(self.update_engine)
         self.device_choice.currentIndexChanged.connect(self.update_engine)
@@ -325,8 +329,9 @@ class TranscriptionDialog(ServiceDialog):
         self.generation_mode.addItem('按音色推荐', 'auto')
         self.generation_mode.addItem('主旋律＋稀疏单音伴奏', 'simple')
         self.generation_mode.addItem('钢琴主旋律＋稀疏和弦', 'chords')
+        self.generation_mode.addItem('主旋律＋和弦', 'rich_chords')
         self.generation_mode.addItem('仅完整主旋律', 'melody')
-        self.generation_mode.setToolTip('推荐：钢琴主旋律＋稀疏和弦，小提琴仅主旋律；仍可手动选择单音伴奏。声部勾选只控制显示与试听。')
+        self.generation_mode.setToolTip('主旋律＋和弦：依据原曲和声适度补全，有旋律时伴奏对齐旋律起音，总共最多三键；独立器乐段保留原节奏，支持全部音色。按音色推荐仍使用原默认。声部勾选只控制显示与试听。')
         form.addRow('生成模式', self.generation_mode)
         self.rhythm_mode = QComboBox()
         for title, value in (('轻度整理（可靠拍点）', 'gentle'), ('原始时序', 'original'), ('严格对齐', 'strict')):
@@ -478,6 +483,7 @@ class TranscriptionDialog(ServiceDialog):
         self.login.setEnabled(not self.host.netease_auth_restoring and not self.busy)
 
     def update_engine(self):
+        self.refresh_devices()
         try:
             if self.backend_choice.currentData() == 'hybrid':
                 engine = select_hybrid_engine(self.host.store.directory, self.model_choice.currentData(), self.device_choice.currentData())
@@ -494,10 +500,27 @@ class TranscriptionDialog(ServiceDialog):
         except ValueError as exc:
             self.engine_status.setText(str(exc))
 
+    def refresh_devices(self, force=False):
+        try:
+            directory = self.host.store.directory
+            engine = (select_hybrid_engine(directory, require_models=False)
+                      if self.backend_choice.currentData() == 'hybrid' else find_engine(directory))
+            if engine:
+                self.device_status.refresh(engine, self.device_choice.currentData(), force)
+            else:
+                self.device_status.stop()
+                self.device_status.summary.setText('请先安装运行组件以检测设备')
+        except (ValueError, OSError) as exc:
+            self.device_status.stop()
+            self.device_status.summary.setText(str(exc))
+
     def set_busy(self, busy):
         if busy:
             self.stop_preview()
         self.busy = busy
+        self.device_status.refresh_button.setEnabled(not busy)
+        if busy:
+            self.device_status.stop()
         for widget in (self.fetch, self.install_button, self.backend_choice, self.model_choice, self.device_choice, self.history_list, self.start_time, self.end_time, self.all_range, self.short,
                        self.waveform, self.restore_audio, self.instrument, self.generation_mode, self.rhythm_mode,
                        self.ornaments, self.source_choice, self.apply_source, self.section_list):
@@ -519,6 +542,10 @@ class TranscriptionDialog(ServiceDialog):
 
     def update_output(self):
         from ..transcription.refinement import eligible
+        rich = self.generation_mode.currentData() == 'rich_chords'
+        self.description.setText(
+            '主旋律＋和弦：伴奏对齐主旋律起音，总共最多三键；保留旋律音区和音尾保护，无旋律段沿用原节奏。'
+            if rich else '钢琴默认主旋律＋稀疏和弦，小提琴默认主旋律；不确定段落保留休止并标记。')
         self.generation_mode.model().item(self.generation_mode.findData('chords')).setEnabled(
             self.instrument.currentData() == 'Piano')
         self.refine_button.setEnabled(not self.busy and eligible(self.result) and self.score is not None
@@ -540,7 +567,11 @@ class TranscriptionDialog(ServiceDialog):
         self.threshold.setEnabled(not self.busy and not midi and not native)
         self.param_form.setRowVisible(self.threshold, not native and not midi)
         self.ornaments.setEnabled(not self.busy and not native and not midi)
-        self.ornaments.setToolTip('模型事件保留原始起音与结束；可用最短音符和生成模式调整编配。' if native else '')
+        self.ornaments.setToolTip(
+            '不适用：保留原始音符事件。此后端不进行旧式音高平滑；音频结果仍受最短音符过滤影响。'
+            if native or midi else
+            '装饰音是倚音、短经过音等旋律细节。简化会平滑短暂音高抖动或八度毛刺；保留会留下更多细节，也可能留下误识别。仍受最短音符过滤影响，不增加和弦。')
+        self.param_form.labelForField(self.ornaments).setText('装饰音（不适用）' if native or midi else '装饰音')
         self.minimum.setEnabled(not self.busy and not midi)
         self.save.setText('再次保存到曲库' if self.saved else '保存到曲库')
         missing = self.song is not None and not (self.source_dir and
@@ -879,7 +910,14 @@ class TranscriptionDialog(ServiceDialog):
         self.status.setText('正在校验并安装组件…')
         self.job(lambda: install_engine(Path(path), self.host.store.directory,
                                        self.install_cancelled.is_set, self.component_progress.emit),
-                 lambda _: self.status.setText('扒谱组件安装完成'), self.failed, self.install_finished)
+                 self.component_installed, self.failed, self.install_finished)
+
+    def component_installed(self, engine):
+        index = self.backend_choice.findData(engine.backend)
+        if index >= 0:
+            self.backend_choice.setCurrentIndex(index)
+        name = {'hybrid': '混合后端', 'muscriptor': 'MuScriptor'}.get(engine.backend, '扒谱')
+        self.status.setText(f'{name} {engine.version} 运行组件安装完成')
 
     def install_finished(self, _=None):
         self.installing = False
@@ -976,6 +1014,8 @@ class TranscriptionDialog(ServiceDialog):
                     self.set_busy(False)
                     self.progress.setRange(0, 100)
                     self.progress.setValue(100 if self.result else 0)
+                elif stage == 'device':
+                    self.device_status.execution(event)
                 elif stage in ('error', 'cancelled', 'notice'):
                     self.failed(event.get('message', '处理失败'))
                 elif stage in STAGE_NAMES:
@@ -1134,12 +1174,16 @@ class TranscriptionDialog(ServiceDialog):
                 f"映射待核对 {sum(bool(n.extra.get('mappingReview')) for n in notes)} 处")
         for section in info.get('sections', []):
             title = SOURCE_NAMES.get(section['source'], section['source'])
+            if info.get('mode') == 'rich_chords':
+                title = {'rest': '旋律休止', 'uncertain': '旋律待修正'}.get(section['source'], title)
             self.section_list.addItem(f"{clock_text(section['start_ms'] / 1000)}—{clock_text(section['end_ms'] / 1000)} · {title}", section)
         self.section_list.setCurrentIndex(max(0, min(selected, self.section_list.count() - 1)))
         self.section_list.blockSignals(False)
         self.statistics.setToolTip('\n'.join([
-            '映射待核对表示光遇音域或半音改编限制；待修正休止表示缺少可靠旋律证据。',
-            *info.get('warnings', [])]))
+            '映射待核对表示光遇音域或半音改编限制；旋律待修正表示缺少可靠旋律证据。有独立证据的伴奏仍可保留。',
+            *info.get('warnings', []),
+            *[f"{clock_text(s['start_ms']/1000)}—{clock_text(s['end_ms']/1000)} · {s['reason']}"
+              for s in info.get('harmony_review', [])[:40]]]))
         self.seek.setRange(0, round(max(duration, self.score.duration_ms if self.score else 0)))
         self.context_label.setText(f'对应原曲 {clock_text(self.result_start())} · 只读预览，点击定位'
                                   + (' · 人工编辑版本' if self.edited else '')
@@ -1565,6 +1609,7 @@ class TranscriptionDialog(ServiceDialog):
                 event.ignore()
                 return
         self.install_cancelled.set()
+        self.device_status.stop()
         self.stop_preview()
         self.media.setSource(QUrl())
         self.release_source()

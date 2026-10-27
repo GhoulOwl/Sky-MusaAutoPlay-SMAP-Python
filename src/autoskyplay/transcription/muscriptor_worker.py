@@ -26,7 +26,7 @@ def run(args):
     from muscriptor.events import NoteEndEvent, ProgressEvent
 
     from autoskyplay.transcription import worker
-    from autoskyplay.transcription.devices import select_device
+    from autoskyplay.transcription.devices import device_event, select_device
     from autoskyplay.transcription.engine import MUSCRIPTOR_VERSION
     from autoskyplay.transcription.events import EventResult, ModelNote
     from autoskyplay.transcription.models import MODELS, RUNTIME_REVISION, ModelStore
@@ -45,6 +45,7 @@ def run(args):
     torch.manual_seed(0)
     device, device_selection = select_device(
         torch, args.device, allow_mps=True, notice=lambda message: emit('notice', message=message))
+    device_event(emit, device, device_selection)
     emit('decode', 0)
     command = [imageio_ffmpeg.get_ffmpeg_exe(), '-nostdin', '-v', 'error', '-y', '-i', str(work/'source.audio'),
                '-ss', str(start), '-t', str(length), '-vn', '-ar', '16000', '-ac', '1',
@@ -157,7 +158,12 @@ def main():
     parser.add_argument('--device', choices=['auto', 'cpu', 'mps', 'cuda'], default='auto')
     parser.add_argument('--parent', type=int, default=0)
     parser.add_argument('--check', action='store_true')
+    parser.add_argument("--probe-devices", action="store_true")
     args = parser.parse_args()
+    if args.probe_devices:
+        from autoskyplay.transcription.devices import emit_probe
+        emit_probe(emit, args.device)
+        return
     if args.check:
         import torch
         from muscriptor import TranscriptionModel
@@ -175,12 +181,13 @@ def main():
     except Exception as exc:
         import traceback
         traceback.print_exc(file=sys.stderr)
+        from autoskyplay.transcription.devices import error_details
         message = str(exc) if isinstance(exc, ValueError) else 'MuScriptor 运行失败，请选择 CPU 或较短片段重试'
         if 'out of memory' in str(exc).lower() or isinstance(exc, MemoryError):
             message = '内存不足，请选择 small、关闭其他程序或改用 CPU 后重试'
         elif 'did not emit EOS' in str(exc):
             message = '片段音符过密，模型输出不完整；请缩小范围后重试，本次不会保存为完整草稿'
-        emit('error', message=message)
+        emit('error', message=message, **error_details(exc))
         sys.exit(1)
 
 

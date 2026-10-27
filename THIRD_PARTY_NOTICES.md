@@ -73,8 +73,9 @@ Windows Hybrid / MuScriptor 组件使用 PyTorch 官方 2.8.0 + cu128 发行包�
 保留各自许可证；构建脚本收集 wheel 内的 LICENSE/COPYING/NOTICE，随组件 `licenses/` 分发。
 来源与构建选择见 [PyTorch 官方版本说明](https://pytorch.org/get-started/previous-versions/#v280)。
 
-解码使用 imageio-ffmpeg 0.6.0 随包 FFmpeg 二进制，其源代码和构建说明见
+超大音频压缩与可选组件解码使用 imageio-ffmpeg 0.6.0 随包 FFmpeg 二进制，其源代码和构建说明见
 [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) 与
 [FFmpeg 构建项目](https://github.com/BtbN/FFmpeg-Builds)。FFmpeg 许可证以对应发行构建为准；
-组件的 `licenses/` 目录收录各依赖分发中的 LICENSE/COPYING/NOTICE 与 FFmpeg 的 `-L` 输出，
+主程序随包保留 imageio-ffmpeg 发行元数据及许可证；组件的 `licenses/` 目录收录各依赖分发中的
+LICENSE/COPYING/NOTICE 与 FFmpeg 的 `-L` 输出，
 主程序仍按 GPL-3.0 分发。

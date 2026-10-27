@@ -13,7 +13,7 @@ from ..midi import SKY_MIDI
 
 
 def generation_mode(mode, instrument):
-    if instrument not in INSTRUMENTS or mode not in ('auto', 'simple', 'melody', 'chords'):
+    if instrument not in INSTRUMENTS or mode not in ('auto', 'simple', 'melody', 'chords', 'rich_chords'):
         raise ValueError('生成模式或音色无效')
     if mode == 'chords' and instrument != 'Piano':
         mode = 'auto'  # Two-tone voicing is calibrated only for the bundled piano samples.

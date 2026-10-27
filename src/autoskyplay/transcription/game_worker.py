@@ -75,10 +75,11 @@ def run(args):
     torch.set_num_threads(4)
     torch.manual_seed(settings["seed"])
     np.random.seed(settings["seed"])
-    from autoskyplay.transcription.devices import select_device
+    from autoskyplay.transcription.devices import device_event, select_device
 
     device, device_selection = select_device(
         torch, args.device, notice=lambda message: emit('notice', message=message))
+    device_event(emit, device, device_selection)
     audio, sr = sf.read(work / "vocals.wav", dtype="float32", always_2d=True)
     if sr != 44100 or not np.isfinite(audio).all() or not 0.1 <= len(audio) / sr <= 600:
         raise ValueError("GAME 输入必须是所选范围内的 44.1 kHz 有限浮点人声")
@@ -259,12 +260,19 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     os.environ["HF_HUB_OFFLINE"] = "1"
     parser = argparse.ArgumentParser()
-    parser.add_argument("--work", required=True)
-    parser.add_argument("--models", required=True)
+    parser.add_argument("--work")
+    parser.add_argument("--models")
     parser.add_argument("--game-source")
     parser.add_argument("--device", choices=["auto", "cpu", "mps", "cuda"], default="auto")
     parser.add_argument("--parent", type=int, default=0)
+    parser.add_argument("--probe-devices", action="store_true")
     args = parser.parse_args()
+    if args.probe_devices:
+        from autoskyplay.transcription.devices import emit_probe
+        emit_probe(emit, args.device)
+        return
+    if not args.work or not args.models:
+        parser.error("--work and --models are required")
     threading.Thread(target=watch_parent, args=(args.parent,), daemon=True).start()
     try:
         run(args)
@@ -272,11 +280,13 @@ def main():
         import traceback
 
         traceback.print_exc(file=sys.stderr)
+        from autoskyplay.transcription.devices import error_details
         emit(
             "error",
+            **error_details(exc),
             message=str(exc)
             if isinstance(exc, ValueError)
-            else "GAME 运行失败，详见引擎日志；未自动更换设备",
+            else "GAME 运行失败，详见引擎日志",
         )
         sys.exit(1)
 

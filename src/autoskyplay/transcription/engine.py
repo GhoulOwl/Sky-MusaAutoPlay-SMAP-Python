@@ -9,19 +9,22 @@ import platform
 import shutil
 import stat
 import sys
+import tempfile
 import uuid
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from ..score import atomic_json
 
 ENGINE_VERSION = "1.1.0"
-MUSCRIPTOR_VERSION = '2.1.0'
-HYBRID_COMPONENT_VERSION = '3.1.0'
-COMPONENT_BACKENDS = {'2.0.0': 'muscriptor', MUSCRIPTOR_VERSION: 'muscriptor',
-                      '3.0.0': 'hybrid', HYBRID_COMPONENT_VERSION: 'hybrid'}
+MUSCRIPTOR_VERSION = '2.2.0'
+HYBRID_COMPONENT_VERSION = '3.2.0'
+COMPONENT_BACKENDS = {'2.0.0': 'muscriptor', '2.1.0': 'muscriptor', MUSCRIPTOR_VERSION: 'muscriptor',
+                      '3.0.0': 'hybrid', '3.1.0': 'hybrid', HYBRID_COMPONENT_VERSION: 'hybrid'}
 SUPPORTED_VERSIONS = {"1.0.0", ENGINE_VERSION, *COMPONENT_BACKENDS}
+MAX_COMPONENT_BYTES = 6 * 1024 ** 3
 
 
 def source_runtime_identity(*runtime_files):
@@ -62,7 +65,7 @@ class Engine:
     config: dict = field(default_factory=dict)
 
 
-def select_hybrid_engine(directory, model='small', device='auto', background_mix='with_drums'):
+def select_hybrid_engine(directory, model='small', device='auto', background_mix='with_drums', *, require_models=True):
     """Choose the separate component without changing the original-mix backend."""
     from dataclasses import replace
 
@@ -72,7 +75,7 @@ def select_hybrid_engine(directory, model='small', device='auto', background_mix
         raise ValueError('混合后端配置无效')
     if device not in ('auto', 'cpu', 'mps', 'cuda'):
         raise ValueError('设备设置无效')
-    if not ModelStore(directory).installed(model) or not GameModelStore(directory).installed('medium'):
+    if require_models and (not ModelStore(directory).installed(model) or not GameModelStore(directory).installed('medium')):
         raise ValueError('请先安装 MuScriptor 和 GAME medium 模型')
     installed = find_engine(directory, 'hybrid')
     if installed:
@@ -154,15 +157,74 @@ def find_engine(directory: Path, backend='legacy') -> Engine | None:
     return None
 
 
+@contextmanager
+def component_package(archive, temporary_root, cancelled, progress):
+    """Accept a component ZIP or the ZIP wrapping it in a GitHub Actions artifact."""
+    with zipfile.ZipFile(archive) as package:
+        if 'engine.json' in package.namelist():
+            yield package, progress
+            return
+        members = [member for member in package.infolist() if not member.is_dir()]
+        names = [member.filename for member in members]
+        if len(members) > 50000 or len(names) != len(set(names)):
+            raise ValueError('下载包包含过多文件或重复文件')
+        candidates = [member for member in members if member.filename.lower().endswith('.zip')]
+        if len(candidates) != 1:
+            raise ValueError('此 ZIP 不是扒谱组件包；下载包须包含一个组件 ZIP 和对应的 .sha256 校验文件')
+        member = candidates[0]
+        checksum_name = member.filename + '.sha256'
+        if checksum_name not in names or package.getinfo(checksum_name).file_size > 4096:
+            raise ValueError('下载包缺少有效的组件 .sha256 校验文件，请选择原始组件 ZIP 或完整的 GitHub 下载包')
+        for item in (member, package.getinfo(checksum_name)):
+            relative_file(item.filename)
+            mode = item.external_attr >> 16
+            if stat.S_ISLNK(mode) or stat.S_IFMT(mode) not in (0, stat.S_IFREG):
+                raise ValueError('组件包不能包含链接或特殊文件')
+        if member.file_size > MAX_COMPONENT_BYTES:
+            raise ValueError('扒谱组件包过大')
+        try:
+            fields = package.read(checksum_name).decode('utf-8').strip().split(maxsplit=1)
+            expected = fields[0]
+            if (len(expected) != 64 or any(c not in '0123456789abcdefABCDEF' for c in expected)
+                    or len(fields) != 2 or fields[1].lstrip('*') != PurePosixPath(member.filename).name):
+                raise ValueError()
+        except (UnicodeDecodeError, ValueError, IndexError):
+            raise ValueError('下载包的组件 SHA-256 校验文件格式无效') from None
+        with tempfile.TemporaryDirectory(prefix='.component-import-', dir=temporary_root) as folder:
+            nested = Path(folder) / 'component.zip'
+            digest, copied, last_progress = hashlib.sha256(), 0, 0
+            with package.open(member) as source, nested.open('wb') as output:
+                while chunk := source.read(1024 * 1024):
+                    if cancelled():
+                        raise ValueError('组件安装已取消')
+                    digest.update(chunk)
+                    output.write(chunk)
+                    copied += len(chunk)
+                    value = int(copied * 20 / max(1, member.file_size))
+                    if value != last_progress:
+                        progress(value)
+                        last_progress = value
+            if digest.hexdigest() != expected.lower():
+                raise ValueError('GitHub 下载包中的组件 ZIP 校验失败，请重新下载')
+            if cancelled():
+                raise ValueError('组件安装已取消')
+            with zipfile.ZipFile(nested) as inner:
+                if 'engine.json' not in inner.namelist():
+                    raise ValueError('下载包内的 ZIP 缺少组件清单 engine.json，请选择扒谱组件下载包')
+                yield inner, lambda value: progress(20 + value * 80 // 100)
+
+
 def install_engine(archive: Path, directory: Path, cancelled=lambda: False, progress=lambda value: None):
     base = (directory / "transcription").resolve()
     identity = uuid.uuid4().hex
     stage = base / "components" / (".staging-" + identity)
     stage.mkdir(parents=True)
     try:
-        with zipfile.ZipFile(archive) as package:
+        progress(0)
+        with component_package(archive, base, cancelled, progress) as (package, report):
             members = [i for i in package.infolist() if not i.is_dir()]
-            if len(members) > 50000 or sum(i.file_size for i in members) > 6 * 1024 ** 3:
+            total = sum(i.file_size for i in members)
+            if len(members) > 50000 or total > MAX_COMPONENT_BYTES:
                 raise ValueError("扒谱组件包过大")
             names = [i.filename for i in members]
             if len(names) != len(set(names)) or "engine.json" not in names:
@@ -190,7 +252,8 @@ def install_engine(archive: Path, directory: Path, cancelled=lambda: False, prog
                 raise ValueError("扒谱组件缺少引擎或模型")
             if backend == 'hybrid' and 'models/models.json' not in files:
                 raise ValueError('混合组件缺少固定分轨模型清单')
-            for index, member in enumerate(members):
+            copied, last_progress = 0, -1
+            for member in members:
                 if cancelled():
                     raise ValueError("组件安装已取消")
                 path = stage.joinpath(*relative_file(member.filename).parts)
@@ -205,15 +268,25 @@ def install_engine(archive: Path, directory: Path, cancelled=lambda: False, prog
                             raise ValueError("组件安装已取消")
                         digest.update(chunk)
                         output.write(chunk)
+                        copied += len(chunk)
+                        value = int(copied * 99 / max(1, total))
+                        if value != last_progress:
+                            report(value)
+                            last_progress = value
                 if member.filename != "engine.json" and digest.hexdigest() != files[member.filename]:
                     raise ValueError("扒谱组件文件校验失败，请重新下载组件包")
                 if mode & 0o111 or member.filename == entry:
                     path.chmod(0o755)
-                progress(int((index + 1) * 100 / len(members)))
+        if cancelled():
+            raise ValueError('组件安装已取消')
         destination = stage.with_name(identity)
         stage.rename(destination)
         atomic_json(base / "current.json", {"component": identity})
-        return find_engine(directory, backend)
+        installed = find_engine(directory, backend)
+        if installed is None:
+            raise ValueError('组件安装后未能识别，请重新导入组件包')
+        progress(100)
+        return installed
     except (zipfile.BadZipFile, KeyError, TypeError, json.JSONDecodeError):
         raise ValueError("扒谱组件包格式无效，请选择构建生成的组件 ZIP") from None
     finally:

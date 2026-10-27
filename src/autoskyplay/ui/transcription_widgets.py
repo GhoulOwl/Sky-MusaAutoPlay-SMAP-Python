@@ -172,7 +172,7 @@ class PreviewRoll(PianoRoll):
             item.setFlags(QGraphicsItem.GraphicsItemFlag(0))
             note = item.note
             item.setToolTip(f'键位 {note.key + 1} · {note.time_ms / 1000:.2f} 秒 · {note.duration_ms:.0f} ms'
-                            + (' · 简化伴奏' if note.extra.get('generated') else ' · 伴奏' if note.extra.get('role') == 'accompaniment' else ' · 主旋律')
+                            + (' · 补全伴奏' if note.extra.get('generated') else ' · 伴奏' if note.extra.get('role') == 'accompaniment' else ' · 主旋律')
                             + (' · 半音近似' if note.extra.get('approximated') else '')
                             + (' · 音域折叠' if note.extra.get('folded') else '')
                             + (' · 待核对：' + '；'.join(note.extra['reviewReasons']) if note.extra.get('reviewReasons') else '')

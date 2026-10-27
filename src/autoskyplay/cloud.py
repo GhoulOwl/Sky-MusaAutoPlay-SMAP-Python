@@ -85,17 +85,22 @@ class CloudClient:
         score = parse_score(b"".join(chunks), item.get("title", "未命名"))
         if item.get("cover_url") and not score.root.get("cover"):
             try:
-                with self.client.stream("GET", self._url(item["cover_url"])) as response:
-                    response.raise_for_status()
-                    image = bytearray()
-                    for chunk in response.iter_bytes():
-                        image.extend(chunk)
-                        if len(image) > 2 * 1024 * 1024:
-                            raise ValueError("封面超过 2 MB")
-                    score.root["cover"] = base64.b64encode(image).decode("ascii")
+                score.root["cover"] = base64.b64encode(self.cover(item)).decode("ascii")
             except (httpx.HTTPError, ValueError):
                 pass  # Score download remains useful when the optional cover is unavailable.
         return score
+
+    def cover(self, item: dict) -> bytes:
+        if not item.get("cover_url"):
+            return b""
+        with self.client.stream("GET", self._url(item["cover_url"])) as response:
+            response.raise_for_status()
+            image = bytearray()
+            for chunk in response.iter_bytes():
+                image.extend(chunk)
+                if len(image) > 2 * 1024 * 1024:
+                    raise ValueError("封面超过 2 MB")
+        return bytes(image)
 
     def upload(self, score, difficulty: int = 1, tags: str = "", description: str = ""):
         if not self.user.get("mid"):
@@ -122,24 +127,6 @@ class CloudClient:
         data = self._json(self.client.post(self._url("/api/sheets/upload.php"), data=fields, files=files))
         if data.get("status") != "ok":
             raise ValueError(data.get("msg", "上传失败"))
-        return data
-
-    def upload_log(self, path: Path):
-        if urlparse(self.base_url).scheme != "https":
-            raise ValueError("上传日志需要 HTTPS 连接")
-        data = self._json(
-            self.client.post(
-                self._url("/api/game_log.php"),
-                json={
-                    "mid": self.user.get("mid", ""),
-                    "username": self.user.get("username", ""),
-                    "version": __version__,
-                    "log": path.read_text(encoding="utf-8")[-200_000:],
-                },
-            )
-        )
-        if data.get("status") != "ok":
-            raise ValueError(data.get("msg", "上传日志失败"))
         return data
 
 

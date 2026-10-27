@@ -54,3 +54,40 @@ def test_bad_download_never_becomes_a_local_score():
     with pytest.raises(ValueError):
         cloud.download({"download_url": "/failed.txt"})
     cloud.close()
+
+
+def test_cover_supports_relative_urls_without_downloading_a_score():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, content=b"cover image")
+
+    cloud = CloudClient("https://example.org")
+    cloud.client.close()
+    cloud.client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        assert cloud.cover({}) == b""
+        assert not requests
+        assert cloud.cover({"cover_url": "/covers/song.jpg"}) == b"cover image"
+        assert len(requests) == 1
+        assert str(requests[0].url) == "https://example.org/covers/song.jpg"
+    finally:
+        cloud.close()
+
+
+@pytest.mark.parametrize("status,content,error", [
+    (404, b"", httpx.HTTPStatusError),
+    (200, b"x" * (2 * 1024 * 1024 + 1), ValueError),
+])
+def test_cover_rejects_failed_or_oversized_images(status, content, error):
+    cloud = CloudClient("https://example.org")
+    cloud.client.close()
+    cloud.client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(status, content=content))
+    )
+    try:
+        with pytest.raises(error):
+            cloud.cover({"cover_url": "/cover.jpg"})
+    finally:
+        cloud.close()

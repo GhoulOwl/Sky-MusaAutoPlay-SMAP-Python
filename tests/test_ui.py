@@ -40,6 +40,121 @@ def test_library_queue_and_restore(qtbot, tmp_path):
     window.close()
 
 
+@pytest.mark.parametrize("exists", [True, False])
+def test_about_views_local_log_without_network(qtbot, tmp_path, monkeypatch, exists):
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtWidgets import QDialog, QPushButton
+
+    window, _ = make_window(qtbot, tmp_path)
+    path = tmp_path / "autoskyplay.log"
+    if exists:
+        path.write_text("Local log\n", encoding="utf-8")
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(window, "run_job", lambda *args, **kwargs: pytest.fail("日志查看不能发起后台网络任务"))
+
+    def open_about(dialog):
+        buttons = dialog.findChildren(QPushButton)
+        assert not any("上传日志" in button.text() for button in buttons)
+        view = next(button for button in buttons if button.text() == "查看日志")
+        view.click()
+        dialog.accept()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", open_about)
+    window.about()
+    assert [url.toLocalFile() for url in opened] == ([str(path)] if exists else [])
+    if not exists:
+        assert window.status.text() == "暂无日志"
+    window.close()
+
+
+def test_cloud_records_keep_covers_and_download_selection_when_appending(qtbot, tmp_path, monkeypatch):
+    window, _ = make_window(qtbot, tmp_path)
+    songs = [
+        {"id": 1, "title": "晴天", "artist": "周杰伦", "transcribed_by": "小明", "difficulty": 3,
+         "downloads": 123, "cover_url": "/cover.jpg"},
+        {"id": 2, "title": "夜曲", "artist": "周杰伦", "transcribed_by": "小红", "difficulty": 5,
+         "downloads": 7, "cover_url": ""},
+    ]
+    covers = []
+    downloads = []
+
+    def cover(item):
+        covers.append(item["id"])
+        return cover_bytes()
+
+    def download(item):
+        downloads.append(item["id"])
+        return Score(item["title"], notes=[Note(0, 0)])
+
+    monkeypatch.setattr(window.cloud_client, "list", lambda query, sort, difficulty, page: {
+        "pages": 2, "total": 2, "items": [songs[page - 1]],
+    })
+    monkeypatch.setattr(window.cloud_client, "cover", cover)
+    monkeypatch.setattr(window.cloud_client, "download", download)
+    window.show_page(1)
+    qtbot.waitUntil(lambda: not window.jobs)
+    assert window.cloud_table.columnCount() == 3
+    assert window.cloud_table.item(0, 1).data(Qt.ItemDataRole.UserRole) == songs[0]
+    assert window.cloud_table.item(0, 2).text() == "123"
+    icon = window.cloud_table.item(0, 0).icon()
+    assert icon.pixmap(32, 32).toImage().pixelColor(16, 16).name() == "#cc7755"
+    center = window.cloud_table.visualItemRect(window.cloud_table.item(0, 0)).center()
+    assert window.cloud_table.viewport().grab().toImage().pixelColor(center).name() == "#cc7755"
+    window.cloud_table.selectRow(0)
+    window.load_cloud(False)
+    qtbot.waitUntil(lambda: not window.jobs)
+    assert window.cloud_table.rowCount() == 2
+    assert window.cloud_table.currentRow() == 0
+    assert window.cloud_table.item(0, 0).icon().cacheKey() == icon.cacheKey()
+    assert not window.cloud_table.item(1, 0).icon().isNull()
+    assert window.cloud_table.item(1, 2).text() == "7"
+    assert covers == [1]
+    window.cloud_table.selectRow(1)
+    window.download_button.click()
+    qtbot.waitUntil(lambda: not window.jobs)
+    assert downloads == [2]
+    assert any(score.name == "夜曲" for score in window.scores)
+    window.close()
+
+
+def test_stale_cloud_cover_cannot_replace_new_search(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    window, _ = make_window(qtbot, tmp_path)
+    started, release = threading.Event(), threading.Event()
+    image = cover_bytes()
+
+    def cover(item):
+        if item["title"] == "old":
+            started.set()
+            release.wait(timeout=5)
+        return image
+
+    monkeypatch.setattr(window.cloud_client, "cover", cover)
+    monkeypatch.setattr(window.cloud_client, "list", lambda query, *args: {
+        "pages": 1, "total": 1, "items": [{"title": query or "old", "cover_url": "/cover.jpg"}],
+    })
+    window.show_page(1)
+    try:
+        qtbot.waitUntil(started.is_set)
+        window.search.setText("new")
+        window.load_cloud(True)
+        qtbot.waitUntil(lambda: not window.cloud_loading and window.cover_pool.activeThreadCount() == 1)
+        # Consume the new cover's result before releasing the older request.
+        qtbot.waitUntil(lambda: window.cloud_table.item(0, 0).icon().pixmap(32, 32)
+                        .toImage().pixelColor(16, 16).name() == "#cc7755")
+        icon = window.cloud_table.item(0, 0).icon().cacheKey()
+        release.set()
+        qtbot.waitUntil(lambda: not window.jobs)
+        assert window.cloud_table.item(0, 1).text() == "new"
+        assert window.cloud_table.item(0, 0).icon().cacheKey() == icon
+    finally:
+        release.set()
+        window.close()
+
+
 def test_editor_undo_redo_saves_notes(qtbot, tmp_path):
     window, score = make_window(qtbot, tmp_path)
     editor = EditorDialog(window, score)
@@ -483,7 +598,7 @@ def test_netease_qr_login_updates_home_and_stops_polling(qtbot, tmp_path, monkey
     window.close()
 
 
-def test_netease_settings_reject_occupied_port_without_changing_data(qtbot, tmp_path, monkeypatch):
+def test_netease_settings_accept_preferred_port_even_when_occupied(qtbot, tmp_path, monkeypatch):
     import socket
 
     from PySide6.QtWidgets import QMessageBox
@@ -492,15 +607,16 @@ def test_netease_settings_reject_occupied_port_without_changing_data(qtbot, tmp_
     dialog = SettingsDialog(window)
     qtbot.addWidget(dialog)
     warnings = []
-    old_port = window.store.data["netease_port"]
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
-        dialog.netease_port.setValue(sock.getsockname()[1])
+        preferred = sock.getsockname()[1]
+        dialog.netease_port.setValue(preferred)
         dialog.save()
-    assert warnings and "被占用" in warnings[0]
-    assert window.store.data["netease_port"] == old_port
-    dialog.reject()
+    assert not warnings
+    assert window.store.data["netease_port"] == preferred
+    assert window.netease_service.preferred_port == preferred
+    assert dialog.result() == dialog.DialogCode.Accepted
     window.close()
 
 

@@ -46,6 +46,8 @@ def run(args):
         analysis=dict(
             beats_ms=analysis["beats_ms"].tolist(),
             beat_confidence=float(analysis["beat_confidence"]),
+            chroma=analysis["chroma"].tolist(),
+            harmony_energy_db=analysis["harmony_energy_db"].tolist(),
             energy_db=energy["original"],
             vocals_energy_db=energy["vocals"],
             background_energy_db=energy["other"],
@@ -56,7 +58,7 @@ def run(args):
         ),
     )
     atomic_json(work / "features.json", result)
-    emit("done", 100, analysis_version="hybrid-features-1", duration_ms=duration * 1000)
+    emit("done", 100, analysis_version="hybrid-features-2", duration_ms=duration * 1000)
 
 
 def main():

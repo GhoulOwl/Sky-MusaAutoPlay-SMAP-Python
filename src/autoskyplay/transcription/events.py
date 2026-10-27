@@ -90,6 +90,14 @@ class EventResult:
         if (not isinstance(confidence, (float, int)) or not 0 <= confidence <= 1
                 or energy.ndim != 1 or len(energy) > 6001 or not np.isfinite(energy).all()):
             raise ValueError('音频分析无效')
+        if 'chroma' in self.analysis:
+            chroma = np.asarray(self.analysis['chroma'], dtype=float)
+            levels = np.asarray(self.analysis.get('harmony_energy_db', []), dtype=float)
+            count = max(0, len(beats)-1)
+            if (chroma.size and chroma.shape != (count, 12) or levels.shape != (count,)
+                    or not np.isfinite(chroma).all() or not np.isfinite(levels).all()
+                    or (chroma < 0).any()):
+                raise ValueError('和声证据格式无效')
 
     @classmethod
     def load(cls, path, metadata=None):

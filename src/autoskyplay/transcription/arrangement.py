@@ -82,7 +82,7 @@ def chord_from_chroma(chroma):
 
 def arrange(result, threshold=.35, minimum=80, mode='simple', ornaments='simplify', overrides=()):
     from .events import EventResult, arrange_events
-    if mode == 'chords':
+    if mode in ('chords', 'rich_chords'):
         mode = 'simple'  # Raw source candidates; voicing happens only after Sky mapping.
     if mode not in ('melody', 'simple'):
         raise ValueError('生成模式无效')
@@ -235,14 +235,16 @@ def build_score(result, name, *, threshold=.35, minimum=80, mode='auto', ornamen
     from .events import EventResult
     requested_mode = mode
     mode = generation_mode(mode, instrument)
-    notes, info = arrange(result, threshold, minimum, 'simple' if mode == 'chords' else mode, ornaments, overrides)
+    notes, info = arrange(result, threshold, minimum,
+                          'melody' if mode == 'rich_chords' else 'simple' if mode == 'chords' else mode,
+                          ornaments, overrides)
     if shift is None:
         shift = phrase_shift(notes)
     analysis = getattr(result, 'analysis', {})
     metadata = dict(result.metadata, **info, mode=mode, ornaments=ornaments, overrides=list(overrides),
                     threshold=None if isinstance(result, EventResult) else threshold, minimum_ms=minimum,
                     analysis_version=3 if isinstance(result, EventResult) else 2,
-                    arrangement_revision=7 if result.metadata.get('backend') == 'hybrid'
+                    arrangement_revision=11 if mode == 'rich_chords' else 7 if result.metadata.get('backend') == 'hybrid'
                     else 6 if isinstance(result, EventResult) else 5,
                     generation_mode=requested_mode, instrument=instrument,
                     beats_ms=np.asarray(analysis.get('beats_ms', [])).tolist(),
@@ -269,6 +271,9 @@ def build_score(result, name, *, threshold=.35, minimum=80, mode='auto', ornamen
     # Apply key/polyphony constraints to the final intervals, after eliminating
     # tiny fragments so they cannot displace a valid accompanying voice.
     constrain_score(score, instrument)
+    if mode == 'rich_chords':
+        from .rich_harmony import rich_accompaniment
+        rich_accompaniment(score, result, minimum, overrides)
     score.root['transcription']['mapping_review'] = [
         dict(start_ms=n.time_ms, end_ms=n.time_ms + n.duration_ms, reason=n.extra['mappingReview'])
         for n in score.notes if n.extra.get('mappingReview')]

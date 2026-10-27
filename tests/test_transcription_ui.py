@@ -125,6 +125,28 @@ def test_component_cancel_waits_until_installation_finishes(qtbot, tmp_path, mon
     window.close()
 
 
+def test_component_install_selects_matching_backend_and_confirms_version(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    from autoskyplay.transcription.engine import Engine
+
+    window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    dialog.backend_choice.setCurrentIndex(dialog.backend_choice.findData('muscriptor'))
+    engine = Engine(['engine'], tmp_path, '3.1.0', 'hybrid')
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *_: ('github-download.zip', ''))
+    monkeypatch.setattr('autoskyplay.ui.transcription.install_engine', lambda *args: engine)
+    monkeypatch.setattr('autoskyplay.ui.transcription.select_hybrid_engine', lambda *args, **kwargs: engine)
+
+    dialog.install_component()
+    qtbot.waitUntil(lambda: not dialog.busy)
+
+    assert dialog.backend_choice.currentData() == 'hybrid'
+    assert '混合后端 3.1.0' in dialog.status.text() and '安装完成' in dialog.status.text()
+    assert '就绪' in dialog.engine_status.text()
+    dialog.close()
+    window.close()
+
+
 def test_editor_saved_result_is_used_by_following_preview_and_save(qtbot, tmp_path, monkeypatch):
     window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
     dialog.score = Score("Draft", notes=[Note(0, 0)])

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from ..audio_files import MAX_AUDIO_BYTES, compress_audio
 from ..score import atomic_json
 from .cache import DownloadCache
 
@@ -43,9 +44,13 @@ class AudioSource:
                 raise ValueError("音频准备已取消")
         try:
             if self.local_path:
-                if not self.local_path.is_file() or self.local_path.stat().st_size > 100 * 1024**2:
-                    raise ValueError("请选择不超过 100 MB 的音频文件")
-                shutil.copyfile(self.local_path, self.work / "source.audio")
+                if not self.local_path.is_file():
+                    raise ValueError("所选音频文件不存在，请重新选择")
+                if self.local_path.stat().st_size > MAX_AUDIO_BYTES:
+                    compress_audio(self.local_path, self.work / "source.audio", self.cancelled.is_set,
+                                   max_bytes=MAX_AUDIO_BYTES)
+                else:
+                    shutil.copyfile(self.local_path, self.work / "source.audio")
             else:
                 cached = self.cache.get(self.song.id, self.work / "source.audio", self.audio)
                 if cached:

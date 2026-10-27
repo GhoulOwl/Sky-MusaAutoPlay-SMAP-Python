@@ -23,7 +23,8 @@ PYTHON = ENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def run(*args):
-    subprocess.run([str(x) for x in args], cwd=ROOT, check=True)
+    env = dict(os.environ, PYINSTALLER_CONFIG_DIR=str(ROOT/'build/pyinstaller-cache-hybrid'))
+    subprocess.run([str(x) for x in args], cwd=ROOT, check=True, env=env)
 
 
 def main():
@@ -127,6 +128,8 @@ def main():
     entry = "AutoSkyPlay-Hybrid" + (".exe" if os.name == "nt" else "")
     verify_cuda_bundle(bundle, variant)
     run(bundle / entry, "--check")
+    run(bundle / entry, "--probe-devices", "--device", "cpu")
+    run(bundle / entry, "--probe-devices", "--device", "auto")
     files = {}
     for file in sorted(bundle.rglob("*")):
         if file.is_file() and file.name != "engine.json":

@@ -32,9 +32,12 @@ def fake_torch(*, cuda=True, mps=False, build='12.8', failure=None):
 
     return SimpleNamespace(
         version=SimpleNamespace(cuda=build),
-        cuda=SimpleNamespace(is_available=lambda: cuda, synchronize=lambda: calls.append(('sync',)),
-                             get_device_name=lambda: 'NVIDIA test GPU'),
+        cuda=SimpleNamespace(is_available=lambda: cuda, synchronize=lambda i: calls.append(('sync', i)),
+                             get_device_name=lambda i: 'NVIDIA test GPU', device_count=lambda: 1,
+                             set_device=lambda i: calls.append(('select', i)),
+                             mem_get_info=lambda i: (8*1024**3, 12*1024**3)),
         backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps)),
+        mps=SimpleNamespace(synchronize=lambda: calls.append(('mps_sync',))),
         ones=ones, calls=calls)
 
 
@@ -42,7 +45,8 @@ def test_auto_cuda_runs_kernel_before_choosing_gpu_and_cpu_override_skips_it():
     torch = fake_torch(mps=True)
     device, details = select_device(torch, allow_mps=True)
     assert device == 'cuda' and details['gpu'] == 'NVIDIA test GPU'
-    assert torch.calls == [('probe', 'cuda'), ('sync',)]
+    assert ('probe', 'cuda:0') in torch.calls and ('sync', 0) in torch.calls
+    assert torch.calls[-1] == ('select', 0) and details['actual_device'] == 'cuda:0'
     torch.calls.clear()
     assert select_device(torch, 'cpu')[0] == 'cpu'
     assert not torch.calls
@@ -90,7 +94,8 @@ print(json.dumps(dict(stage='done', device=a.device, model=a.model)))
 
 
 @pytest.mark.parametrize('version,backend', [('2.0.0', 'muscriptor'), ('2.1.0', 'muscriptor'),
-                                          ('3.0.0', 'hybrid'), ('3.1.0', 'hybrid')])
+                                          ('2.2.0', 'muscriptor'), ('3.0.0', 'hybrid'),
+                                          ('3.1.0', 'hybrid'), ('3.2.0', 'hybrid')])
 def test_component_upgrade_preserves_old_versions_and_runtime_cache_identity(tmp_path, version, backend):
     archive = tmp_path/'component.zip'
 

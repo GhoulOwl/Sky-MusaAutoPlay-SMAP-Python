@@ -282,6 +282,69 @@ def test_bundled_service_lifecycle_auth_and_restart(tmp_path):
         service.close()
 
 
+def test_busy_preferred_port_uses_temporary_port_and_next_launch_returns_to_preferred(tmp_path):
+    if not (SERVICE_DIR / "runtime/runtime.json").exists():
+        pytest.skip("Run scripts/prepare_netease.py for the bundled runtime integration test")
+    with socket.socket() as occupied:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        occupied.bind(("127.0.0.1", 0))
+        preferred = occupied.getsockname()[1]
+        store = Store(tmp_path)
+        store.data["netease_port"] = preferred
+        store.save()
+        service = NeteaseService(preferred, tmp_path / "netease")
+        try:
+            service.ensure_running()
+            assert service.port != preferred and service.preferred_port == preferred
+            assert Store(tmp_path).data["netease_port"] == preferred
+            process = service.process
+            service.configure(preferred)
+            assert service.process is process and process.poll() is None
+            with httpx.Client(trust_env=False) as http:
+                reply = http.get(service.base_url + "/health", headers={"Authorization": f"Bearer {service.token}"})
+                assert reply.json()["service"] == "AutoSkyPlay.Netease"
+        finally:
+            service.close()
+    restarted = NeteaseService(Store(tmp_path).data["netease_port"], tmp_path / "netease")
+    try:
+        restarted.ensure_running()
+        assert restarted.port == preferred
+    finally:
+        restarted.close()
+
+
+def test_service_retries_if_port_is_claimed_between_probe_and_start(tmp_path, monkeypatch):
+    if not (SERVICE_DIR / "runtime/runtime.json").exists():
+        pytest.skip("Run scripts/prepare_netease.py for the bundled runtime integration test")
+    with socket.socket() as occupied:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        occupied.bind(("127.0.0.1", 0))
+        preferred = occupied.getsockname()[1]
+    service = NeteaseService(preferred, tmp_path / "netease")
+    start = service._start_process
+    ports = []
+    with socket.socket() as competitor:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            competitor.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+
+        def claim_and_start(node):
+            ports.append(service.port)
+            if len(ports) == 1:
+                competitor.bind(("127.0.0.1", service.port))
+            return start(node)
+
+        monkeypatch.setattr(service, "_start_process", claim_and_start)
+        try:
+            service.ensure_running()
+            assert ports[0] == preferred and len(ports) == 2
+            assert service.port != preferred
+            assert service.process.poll() is None
+        finally:
+            service.close()
+
+
 def test_login_survives_new_client_and_logout_removes_credentials(tmp_path, credential_store):
     from autoskyplay.auth import load_netease_auth
 

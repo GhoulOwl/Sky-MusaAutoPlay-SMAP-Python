@@ -28,7 +28,12 @@ def main():
     parser.add_argument("--parent", type=int, default=0)
     parser.add_argument("--separate-only", action="store_true")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--probe-devices", action="store_true")
     args = parser.parse_args()
+    if args.probe_devices:
+        from autoskyplay.transcription.devices import emit_probe
+        emit_probe(emit, args.device)
+        return
     args.game_source = None
     if args.check:
         import demucs
@@ -65,11 +70,13 @@ def main():
         import traceback
 
         traceback.print_exc(file=sys.stderr)
+        from autoskyplay.transcription.devices import error_details
         message = str(exc) if isinstance(exc, ValueError) else '混合后端阶段失败，详见阶段日志'
         if isinstance(exc, MemoryError) or 'out of memory' in str(exc).lower():
             message = '内存或显存不足，请选择 small、较短片段或 CPU 后重试；本次未保存不完整结果'
         emit(
             "error",
+            **error_details(exc),
             message=message,
         )
         sys.exit(1)

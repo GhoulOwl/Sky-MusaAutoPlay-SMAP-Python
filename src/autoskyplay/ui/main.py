@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -56,6 +56,7 @@ from ..score import Score, load_score
 from ..storage import scan_library
 from ..updater import download_asset, installer_asset
 from . import style
+from .cloud import CloudSongDelegate
 from .dialogs import LoginDialog, MidiDialog, SettingsDialog
 from .editor import EditorDialog
 from .netease import NeteaseLoginDialog
@@ -121,6 +122,8 @@ class MainWindow(QMainWindow):
         self.jobs = set()
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(3)
+        self.cover_pool = QThreadPool(self)
+        self.cover_pool.setMaxThreadCount(3)
         self.closed = False
         self.practice_dialog = None
         self.transcription_dialog = None
@@ -544,11 +547,21 @@ class MainWindow(QMainWindow):
         self.download_button = button("download", self.download_cloud, accent=True)
         row.addWidget(self.download_button)
         layout.addLayout(row)
-        self.cloud_table = QTableWidget(0, 4)
-        self.cloud_table.setHorizontalHeaderLabels([style.tr("title"), style.tr("artist"), "★", "↓"])
-        self.cloud_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.cloud_table = QTableWidget(0, 3)
+        self.cloud_table.setHorizontalHeaderLabels(
+            [style.tr("cloud.cover"), style.tr("cloud.song"), style.tr("cloud.downloads")]
+        )
+        self.cloud_table.setItemDelegate(CloudSongDelegate(self.cloud_table))
+        header = self.cloud_table.horizontalHeader()
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        download_width = max(100, self.fontMetrics().horizontalAdvance(style.tr("cloud.downloads")) + 32)
+        for column, width in ((0, 88), (2, download_width)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            self.cloud_table.setColumnWidth(column, width)
         self.cloud_table.verticalHeader().hide()
+        self.cloud_table.setShowGrid(False)
         self.cloud_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.cloud_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.cloud_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.cloud_table.cellDoubleClicked.connect(lambda *_: self.download_cloud())
         self.cloud_table.verticalScrollBar().valueChanged.connect(self.cloud_scroll)
@@ -557,7 +570,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.more_button)
         self.pages.addWidget(panel)
 
-    def run_job(self, callback, on_result=None, on_error=None, on_finished=None, priority=0):
+    def run_job(self, callback, on_result=None, on_error=None, on_finished=None, priority=0, pool=None):
         job = Job(callback)
         self.jobs.add(job)
         if on_result:
@@ -580,7 +593,7 @@ class MainWindow(QMainWindow):
                 on_finished()
 
         job.signals.finished.connect(finished)
-        self.pool.start(job, priority)
+        (pool or self.pool).start(job, priority)
 
     def restore(self):
         result = scan_library(self.store.songs_dir)
@@ -1286,19 +1299,27 @@ class MainWindow(QMainWindow):
                 return
             self.cloud_page = page
             self.cloud_pages = int(data.get("pages", 1))
+            start = len(self.cloud_items)
             self.cloud_items.extend(data.get("items", []))
             self.cloud_table.setRowCount(len(self.cloud_items))
-            for row, item in enumerate(self.cloud_items):
-                for col, text in enumerate(
-                    [
-                        item.get("title", ""),
-                        item.get("artist", ""),
-                        "★" * max(0, min(5, int(item.get("difficulty", 0)))),
-                        str(item.get("downloads", 0)),
-                    ]
-                ):
-                    self.cloud_table.setItem(row, col, QTableWidgetItem(str(text)))
-                self.cloud_table.setRowHeight(row, 48)
+            placeholder = cover_icon(Score())
+            for row in range(start, len(self.cloud_items)):
+                item = self.cloud_items[row]
+                cover = QTableWidgetItem()
+                cover.setIcon(placeholder)
+                self.cloud_table.setItem(row, 0, cover)
+                details = QTableWidgetItem(str(item.get("title") or style.tr("cloud.untitled")))
+                details.setData(Qt.ItemDataRole.UserRole, item)
+                description = "\n".join(str(item.get(key) or "") for key in ("title", "artist", "transcribed_by"))
+                details.setToolTip(description)
+                details.setData(Qt.ItemDataRole.AccessibleTextRole, description)
+                self.cloud_table.setItem(row, 1, details)
+                downloads = QTableWidgetItem(str(item.get("downloads") or 0))
+                downloads.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.cloud_table.setItem(row, 2, downloads)
+                self.cloud_table.setRowHeight(row, max(92, self.fontMetrics().height() * 3 + 28))
+                if item.get("cover_url"):
+                    self.load_cloud_cover(client, item, row, generation)
             self.library_status.setText(
                 f"{len(self.cloud_items)} / {data.get('total', 0)} · {self.cloud_page}/{self.cloud_pages}"
             )
@@ -1314,6 +1335,22 @@ class MainWindow(QMainWindow):
                 self.cloud_pages = max(1, self.cloud_pages)
 
         self.run_job(lambda: client.list(query, sort, difficulty, page), loaded, failed, finished)
+
+    def load_cloud_cover(self, client, item, row, generation):
+        def fetch():
+            if self.closed or generation != self.cloud_generation:
+                return b""
+            return client.cover(item)
+
+        def loaded(data):
+            if generation != self.cloud_generation or self.closed:
+                return
+            pixmap = QPixmap()
+            if data and pixmap.loadFromData(data):
+                self.cloud_table.item(row, 0).setIcon(QIcon(pixmap))
+
+        # Optional covers use their own pool so they cannot delay searches or downloads.
+        self.run_job(fetch, loaded, on_error=lambda message: None, pool=self.cover_pool)
 
     def cloud_scroll(self, value):
         bar = self.cloud_table.verticalScrollBar()
@@ -1521,7 +1558,7 @@ class MainWindow(QMainWindow):
             )
         )
         root.addWidget(button("set.update", self.check_updates))
-        root.addWidget(button("set.uploadLog", self.upload_log))
+        root.addWidget(button("set.viewLog", self.view_log))
         root.addWidget(button("back", dialog.accept))
         dialog.exec()
 
@@ -1594,12 +1631,13 @@ class MainWindow(QMainWindow):
         dialog.resize(560, 430)
         dialog.exec()
 
-    def upload_log(self):
+    def view_log(self):
         path = self.store.directory / "autoskyplay.log"
         if not path.exists():
+            self.status.setText(style.tr("log.missing"))
             return
-        client = self.cloud_client
-        self.run_job(lambda: client.upload_log(path), lambda result: self.status.setText("日志上传成功"))
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+            self.show_error(style.tr("log.openFailed"))
 
     def show_error(self, message):
         if self.closed:

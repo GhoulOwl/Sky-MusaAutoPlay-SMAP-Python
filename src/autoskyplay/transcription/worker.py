@@ -75,13 +75,14 @@ def run(args):
     from demucs.apply import apply_model
     from demucs.hf import load_safetensors_model
 
-    from autoskyplay.transcription.devices import select_device
+    from autoskyplay.transcription.devices import device_event, select_device
 
     torch.set_num_threads(min(4, os.cpu_count() or 1))
     torch.manual_seed(0)
     np.random.seed(0)
     device, device_selection = select_device(
         torch, getattr(args, 'device', 'cpu'), notice=lambda message: emit('notice', message=message))
+    device_event(emit, device, device_selection)
     work = Path(args.work).resolve()
     models = Path(args.models).resolve()
     verify_models(models)
@@ -198,7 +199,12 @@ def main():
     parser.add_argument("--separate-only", action="store_true")
     parser.add_argument("--pitch-only", action="store_true")
     parser.add_argument("--device", choices=['auto', 'cpu', 'mps', 'cuda'], default='cpu')
+    parser.add_argument("--probe-devices", action="store_true")
     args = parser.parse_args()
+    if args.probe_devices:
+        from autoskyplay.transcription.devices import emit_probe
+        emit_probe(emit, args.device)
+        return
     if args.check:
         import demucs
         import imageio_ffmpeg
@@ -217,13 +223,14 @@ def main():
     except Exception as exc:
         import traceback
         traceback.print_exc(file=sys.stderr)
+        from autoskyplay.transcription.devices import error_details
         if isinstance(exc, MemoryError) or "out of memory" in str(exc).lower():
             message = "本机内存不足，请关闭其他程序或选择更短的片段"
         elif isinstance(exc, ValueError):
             message = str(exc)
         else:
             message = "本地扒谱引擎运行失败，请重新安装组件或选择更短的片段"
-        emit("error", message=message)
+        emit("error", message=message, **error_details(exc))
         sys.exit(1)
 
 

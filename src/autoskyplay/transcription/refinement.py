@@ -291,11 +291,20 @@ def make_candidate(parent_id, original, baseline, params, local, region):
     outer = [copy.deepcopy(n) for n in baseline.notes if not _inside(n, left, right)]
     inner, protected_collisions = [], []
     instrument = params.get('instrument', 'Piano')
-    tails = piano_tails() if instrument == 'Piano' else (0,) * 15
+    rich = info.get('mode') == 'rich_chords'
+    if rich:
+        from .rich_harmony import MAXIMUM_KEYS, below_lead, sounding_end, strong_tails
+        tails = strong_tails(instrument)
+    else:
+        tails = piano_tails() if instrument == 'Piano' else (0,) * 15
     for n in generated.notes:
         if not _inside(n, left, right):
             if n.extra.get('modelEvent') in added_indices and _overlap(n.time_ms, n.time_ms+n.duration_ms, left, right):
                 conflicts.append(f'{n.time_ms/1000:.2f}s 映射后音符跨过选区边界，请调整范围')
+            if (rich and n.extra.get('generated') and _overlap(n.time_ms, n.time_ms+n.duration_ms, left, right)
+                    and not any((p.key, p.time_ms, p.duration_ms) == (n.key, n.time_ms, n.duration_ms)
+                                for p in outer)):
+                conflicts.append(f'{n.time_ms/1000:.2f}s 新补全伴奏跨过受保护边界，请调整范围')
             continue
         support = n.extra.get('role') == 'accompaniment'
         blocked = False
@@ -303,14 +312,29 @@ def make_candidate(parent_id, original, baseline, params, local, region):
             p_support = p.extra.get('role') == 'accompaniment'
             end = n.time_ms + (max(n.duration_ms, tails[n.key]) if support else n.duration_ms)
             p_end = p.time_ms + (max(p.duration_ms, tails[p.key]) if p_support else p.duration_ms)
+            if rich:
+                end = max(end, sounding_end(n)) if support else end
+                p_end = max(p_end, sounding_end(p)) if p_support else p_end
             if _overlap(n.time_ms, end, p.time_ms, p_end) <= 1e-6:
                 continue
-            if (support and (p_support or n.key == p.key)) or (not support and p_support and n.key == p.key):
+            if (support and ((p_support and not rich) or n.key == p.key)) or (not support and p_support and n.key == p.key):
                 blocked = True
                 if not support:
                     conflicts.append(f'{n.time_ms/1000:.2f}s 旋律与选区外受保护伴奏同键冲突')
                     protected_collisions.append(dict(protected_interval=[p.time_ms, p_end],
                                                        candidate_interval=[n.time_ms, end], role='accompaniment'))
+                break
+            if rich and support and p_support:
+                from ..midi import SKY_MIDI
+                if abs(SKY_MIDI[n.key]-SKY_MIDI[p.key]) % 12 in (1, 6, 11):
+                    blocked = True
+                    break
+            if rich and support != p_support and not below_lead(n.key if support else p.key, [p if support else n]):
+                blocked = True
+                if not support:
+                    conflicts.append(f'{n.time_ms/1000:.2f}s 受保护伴奏侵入新旋律音区，请扩大精修范围')
+                    protected_collisions.append(dict(protected_interval=[p.time_ms, p_end],
+                                                     candidate_interval=[n.time_ms, end], role='accompaniment'))
                 break
             if not support and not p_support:
                 # A protected cross-boundary lead may never be shortened to fit a new attack.
@@ -319,15 +343,45 @@ def make_candidate(parent_id, original, baseline, params, local, region):
                                                    candidate_interval=[n.time_ms, end], role='melody'))
                 blocked = True
                 break
+        if rich and not blocked:
+            end = sounding_end(n) if support else n.time_ms+n.duration_ms
+            sounding = [p for p in outer+inner if _overlap(p.time_ms, sounding_end(p), n.time_ms, end) > 1e-3]
+            for t in {n.time_ms, *(p.time_ms for p in sounding if n.time_ms <= p.time_ms < end-1e-3)}:
+                active = [p for p in sounding if p.time_ms <= t+1e-3 and sounding_end(p) > t+1e-3]
+                support_count = sum(p.extra.get('role') == 'accompaniment' for p in active)
+                budget = n.extra.get('maximumSupport', 2) if support else 2
+                if len(active) >= MAXIMUM_KEYS or support_count+int(support) > budget:
+                    blocked = True
+                    if not support:
+                        conflicts.append('局部旋律与受保护声部超过三键，请扩大精修范围')
+                    break
         if not blocked:
             inner.append(n)
+    if rich:
+        # A rebuilt anchor may be outside the patch or rejected at its boundary.
+        # Align against the actual retained lead, never against a discarded note.
+        lead_onsets = {n.time_ms for n in outer+inner if n.extra.get('role') != 'accompaniment'}
+        inner = [n for n in inner if n.extra.get('attackAlignment') != 'melody' or n.time_ms in lead_onsets]
     score = copy.deepcopy(baseline)
     score.notes = sorted(outer+inner, key=lambda n: (n.time_ms, n.key))
     score.path = None
     score.root['transcription'] = dict(info, refinement=merged.metadata['refinement'],
         sections=_sections(info.get('sections', []), generated.root['transcription'].get('sections', []), left, right))
+    if rich:
+        for field in ('chords', 'harmony_review'):
+            score.root['transcription'][field] = (
+                [s for s in info.get(field, []) if s['end_ms'] <= left or s['start_ms'] >= right] +
+                [s for s in generated.root['transcription'].get(field, [])
+                 if left <= s['start_ms'] and s['end_ms'] <= right])
     # Mapping and budget evidence applies to the patch only, never a full-song claim.
     score.root['transcription']['refinement']['patch_clarity'] = generated.root['transcription'].get('clarity', {})
+    if rich:
+        score.root['transcription']['refinement']['patch_structure'] = {
+            field: generated.root['transcription'].get(field, [] if field == 'harmony_phrases' else {})
+            for field in ('harmony_rhythm', 'harmony_phrases', 'harmony_alignment')}
+        for n in inner:
+            if n.extra.get('role') == 'accompaniment':
+                n.extra['structureScope'] = f'refinement:{ident}'
     before = [asdict(n) for n in baseline.notes if _inside(n, left, right)]
     after = [asdict(n) for n in inner]
     diagnostics = dict(before_notes=len(before), after_notes=len(after), protected_notes=len(outer),

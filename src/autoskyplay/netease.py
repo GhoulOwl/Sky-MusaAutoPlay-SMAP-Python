@@ -7,6 +7,7 @@ remembered in private project-local files, never in state.json or the environmen
 from __future__ import annotations
 
 import atexit
+import logging
 import math
 import os
 import re
@@ -29,6 +30,7 @@ from .auth import (
 )
 
 SERVICE_DIR = Path(__file__).resolve().parent / "assets" / "netease"
+log = logging.getLogger(__name__)
 
 
 class NeteaseError(ValueError):
@@ -58,7 +60,7 @@ def check_port(port: int):
 
 class NeteaseService:
     def __init__(self, port: int, directory: Path, bundle: Path = SERVICE_DIR):
-        self.port = validate_port(port)
+        self.preferred_port = self.port = validate_port(port)
         self.directory, self.bundle = directory, bundle
         self.token = secrets.token_urlsafe(32)
         self.process: subprocess.Popen | None = None
@@ -78,11 +80,28 @@ class NeteaseService:
             check_port(port)
 
     def configure(self, port):
+        validate_port(port)
         with self.lock:
-            self.check_port(port)
-            if port != self.port:
+            if port != self.preferred_port:
                 self._stop()
-                self.port = port
+                self.preferred_port = self.port = port
+
+    def _available_port(self):
+        try:
+            check_port(self.preferred_port)
+            return self.preferred_port
+        except NeteaseError:
+            pass
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            try:
+                probe.bind(("127.0.0.1", 0))
+            except OSError as exc:
+                raise NeteaseError("暂时没有可用的网易云服务端口，请稍后重试") from exc
+            port = probe.getsockname()[1]
+        log.info("网易云设定端口 %s 不可用，本次临时使用端口 %s", self.preferred_port, port)
+        return port
 
     def ensure_running(self):
         with self.lock:
@@ -90,7 +109,6 @@ class NeteaseService:
                 raise NeteaseError("网易云服务已退出")
             if self.process and self.process.poll() is None:
                 return
-            check_port(self.port)
             node = self.bundle / "runtime" / ("node.exe" if os.name == "nt" else "node")
             if (
                 not node.is_file()
@@ -100,44 +118,58 @@ class NeteaseService:
                     "内置网易云服务文件缺失，请重新安装应用；源码运行请先执行 scripts/prepare_netease.py"
                 )
             self.directory.mkdir(parents=True, exist_ok=True)
-            env = os.environ.copy()
-            env.update(
-                AUTOSKYPLAY_NETEASE_PORT=str(self.port),
-                AUTOSKYPLAY_NETEASE_TOKEN=self.token,
-                AUTOSKYPLAY_PARENT_PID=str(os.getpid()),
+            for _ in range(3):
+                if self.closed.is_set():
+                    raise NeteaseError("网易云服务已退出")
+                self.port = self._available_port()
+                if self._start_process(node):
+                    return
+            raise NeteaseError("网易云服务端口连续被占用，请稍后重试")
+
+    def _start_process(self, node):
+        env = os.environ.copy()
+        env.update(
+            AUTOSKYPLAY_NETEASE_PORT=str(self.port),
+            AUTOSKYPLAY_NETEASE_TOKEN=self.token,
+            AUTOSKYPLAY_PARENT_PID=str(os.getpid()),
+        )
+        # Node options and module paths inherited from a shell can alter the bundled service.
+        env.pop("NODE_OPTIONS", None)
+        env.pop("NODE_PATH", None)
+        try:
+            self.process = subprocess.Popen(
+                [str(node), str(self.bundle / "server.cjs")],
+                cwd=self.directory,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
-            # Node options and module paths inherited from a shell can alter the bundled service.
-            env.pop("NODE_OPTIONS", None)
-            env.pop("NODE_PATH", None)
-            try:
-                self.process = subprocess.Popen(
-                    [str(node), str(self.bundle / "server.cjs")],
-                    cwd=self.directory,
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                )
-            except OSError as exc:
-                raise NeteaseError("内置网易云服务启动失败，Node 运行时无法执行，请重新安装应用") from exc
-            deadline = time.monotonic() + 15
-            with httpx.Client(timeout=0.5, trust_env=False) as http:
-                while not self.closed.is_set() and time.monotonic() < deadline:
-                    if self.process.poll() is not None:
-                        self._stop()
-                        raise NeteaseError("内置网易云服务启动失败，请检查服务依赖或更换端口")
+        except OSError as exc:
+            raise NeteaseError("内置网易云服务启动失败，Node 运行时无法执行，请重新安装应用") from exc
+        deadline = time.monotonic() + 15
+        with httpx.Client(timeout=0.5, trust_env=False) as http:
+            while not self.closed.is_set() and time.monotonic() < deadline:
+                if self.process.poll() is not None:
+                    self._stop()
                     try:
-                        reply = http.get(
-                            self.base_url + "/health", headers={"Authorization": f"Bearer {self.token}"}
-                        )
-                        if reply.status_code == 200 and reply.json().get("service") == "AutoSkyPlay.Netease":
-                            return
-                    except (httpx.HTTPError, ValueError):
-                        pass
-                    self.closed.wait(0.1)
-            self._stop()
-            raise NeteaseError("内置网易云服务启动超时或已退出，请检查端口及运行依赖")
+                        check_port(self.port)
+                    except NeteaseError:
+                        # Another process can claim a port after the probe closes.
+                        return False
+                    raise NeteaseError("内置网易云服务启动失败，请检查服务依赖")
+                try:
+                    reply = http.get(
+                        self.base_url + "/health", headers={"Authorization": f"Bearer {self.token}"}
+                    )
+                    if reply.status_code == 200 and reply.json().get("service") == "AutoSkyPlay.Netease":
+                        return True
+                except (httpx.HTTPError, ValueError):
+                    pass
+                self.closed.wait(0.1)
+        self._stop()
+        raise NeteaseError("内置网易云服务启动超时或已退出，请稍后重试或检查运行依赖")
 
     def _stop(self):
         if self.process:
@@ -466,7 +498,7 @@ class NeteaseClient:
 
     def download_audio(self, audio: NeteaseAudio, target: Path, cancelled=lambda: False,
                        progress=lambda value: None, max_bytes=100 * 1024 * 1024):
-        """Stream to an atomic file, with a fresh credential-free CDN client."""
+        """Stream to disk, compress oversized audio, then atomically commit the complete file."""
         target = Path(target)
         temporary = target.with_suffix(target.suffix + ".part")
         temporary.parent.mkdir(parents=True, exist_ok=True)
@@ -486,21 +518,27 @@ class NeteaseClient:
                         if "text/" in reply.headers.get("content-type", ""):
                             raise NeteaseError("网易云返回的内容不是音频，请重新获取歌曲")
                         length = int(reply.headers.get("content-length", 0))
-                        if length > max_bytes:
-                            raise NeteaseError("音频超过 100 MB，请选择更短的歌曲")
                         received = 0
                         with temporary.open("wb") as output:
                             for chunk in reply.iter_bytes(64 * 1024):
                                 if cancelled():
                                     raise NeteaseError("音频下载已取消")
                                 received += len(chunk)
-                                if received > max_bytes:
-                                    raise NeteaseError("音频超过 100 MB，请选择更短的歌曲")
                                 output.write(chunk)
-                                progress(min(100, int(received * 100 / length)) if length else 0)
+                                progress(min(90, int(received * 90 / length)) if length else 0)
                         if not received or (length and received != length):
                             raise NeteaseError("音频下载不完整，请重试")
-                        temporary.replace(target)
+                        if received > max_bytes:
+                            from .audio_files import compress_audio
+                            try:
+                                compress_audio(temporary, target, cancelled,
+                                               lambda value: progress(90 + value // 10), max_bytes)
+                            except ValueError as exc:
+                                raise NeteaseError(str(exc)) from exc
+                        else:
+                            if cancelled():
+                                raise NeteaseError("音频下载已取消")
+                            temporary.replace(target)
                         progress(100)
                         return target
                 raise NeteaseError("网易云音频跳转次数过多，请重新获取歌曲")
