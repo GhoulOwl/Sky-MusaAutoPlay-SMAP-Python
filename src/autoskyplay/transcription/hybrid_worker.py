@@ -76,13 +76,19 @@ def main():
         import traceback
 
         traceback.print_exc(file=sys.stderr)
+
+        from autoskyplay.transcription.decoding import read_request, worker_failure_message
         from autoskyplay.transcription.devices import error_details
+        request = read_request(args.work)
+        decoder_message, decoder_details = worker_failure_message(exc, request)
         message = str(exc) if isinstance(exc, ValueError) else '混合后端阶段失败，详见阶段日志'
+        if decoder_message:
+            message = decoder_message
         if isinstance(exc, MemoryError) or 'out of memory' in str(exc).lower():
             message = '内存或显存不足，请选择 small、较短片段或 CPU 后重试；本次未保存不完整结果'
         emit(
             "error",
-            **error_details(exc),
+            **dict(error_details(exc), **decoder_details),
             message=message,
         )
         sys.exit(1)

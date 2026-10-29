@@ -57,7 +57,7 @@ class DeviceStatus(QWidget):
         self.reports = {}
         self.multistem = engine.config.get('multistem', False)
         self.setFixedHeight(60 if self.multistem else 44)
-        if engine.version not in ('4.0.0', '3.2.0', '2.2.0'):
+        if engine.version not in ('4.0.1', '4.0.0', '3.2.0', '2.2.0'):
             self.summary.setText('组件不支持预检，请升级')
             self.summary.setToolTip('识别时仍按原设备策略执行；新版组件提供硬件检测和 CPU 自动重试。')
             return

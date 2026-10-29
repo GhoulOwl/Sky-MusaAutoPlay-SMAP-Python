@@ -1,10 +1,12 @@
 # AI 扒谱：本地混合引擎
 
-Hybrid 4.0.0 增加主唱去和声与器乐分轨识谱：六轨 Demucs 先分离混合人声、鼓、贝斯、吉他、钢琴、其他，
+Hybrid 4.0.1 提供主唱去和声与器乐分轨识谱：六轨 Demucs 先分离混合人声、鼓、贝斯、吉他、钢琴、其他，
 UVR Karaoke 2 从混合人声中提取主唱，GAME medium 识别主唱，MuScriptor small / medium 分别识别
 贝斯、吉他、钢琴和其他。和声人声不参与识谱，鼓轨不生成音高事件。
 各轨共享一次节奏／调性分析；支持拍点修正和分轨试听。实现、验证和已知边界见
 [六轨优化说明](TRANSCRIPTION_MULTISTEM_REVIEW_2026-10-29.md)。
+4.0.1 修复器乐解码中的鼓点循环，并在严格 EOS 失败时进行有提示的完整分支重试，
+见[长轨识别中断修复](TRANSCRIPTION_EOS_REVIEW_2026-10-29.md)。
 
 以下原混合流程仍适用于 3.x 组件：Demucs 分轨、GAME medium 识别人声、MuScriptor small 识别背景，
 MuScriptor medium 可选；也可切换到 MuScriptor 原混音后端。音频和识别在本机处理，不上传到模型服务。
@@ -185,7 +187,9 @@ RMS 至多 −90 dBFS、峰值至多 −70 dBFS，且分别低于全段峰值 70
 ## 运行结构与边界
 
 FFmpeg 生成 16 kHz 单声道选段；MuScriptor 以顺序 5 秒内部窗口解码，使用 batch=1、
-prelude_forcing=true、greedy、beam=1、固定随机种子。跨窗口未结束音符由模型事件追踪延续。
+prelude_forcing=true、默认 greedy / beam=1、固定随机种子。4.0.1 在严格 EOS 失败时，
+MPS 可从 FP16 完整重试 FP32，再以原生 beam=2 完整重试一次；CPU/CUDA 最多以 beam=2 重试一次。
+四组器乐轨在采样前屏蔽鼓点 token，保留所有有音高的乐器标签。跨窗口未结束音符由模型事件追踪延续。
 不自行把音频切成独立 5 秒 MIDI 再拼接，不合并所有相邻同键事件。
 严格 EOS 检查失败时整个任务报错，旧草稿保留，避免把截断的输出当作完整结果。
 零长度或超范围事件被忽略并记录。节拍使用本地信号分析，不调用 beat_this、MuseScore 或额外模型下载。

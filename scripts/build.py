@@ -18,7 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--installer", action="store_true", help="Also run Inno Setup (Windows only)")
+    parser.add_argument('--dist-dir', type=Path, default=ROOT / 'dist', help='Output directory for the app and DMG')
     args = parser.parse_args()
+    output = args.dist_dir.resolve()
+    if args.installer and output != ROOT / 'dist':
+        parser.error('Windows 安装器暂不支持自定义输出目录')
     prepare()
     command = [
         sys.executable,
@@ -29,6 +33,7 @@ def main():
         "--windowed",
         "--name",
         "AutoSkyPlay",
+        '--distpath', str(output),
         "--specpath",
         str(ROOT / "build"),
         "--paths",
@@ -68,10 +73,10 @@ def main():
         system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
         build_env["PATH"] = str(system32) + os.pathsep + os.environ.get("PATH", "")
     subprocess.run(command, cwd=ROOT, check=True, env=build_env)
-    shutil.copy(ROOT / "LICENSE", ROOT / "dist/AutoSkyPlay/LICENSE")
-    shutil.copy(ROOT / "THIRD_PARTY_NOTICES.md", ROOT / "dist/AutoSkyPlay/THIRD_PARTY_NOTICES.md")
+    shutil.copy(ROOT / 'LICENSE', output / 'AutoSkyPlay/LICENSE')
+    shutil.copy(ROOT / 'THIRD_PARTY_NOTICES.md', output / 'AutoSkyPlay/THIRD_PARTY_NOTICES.md')
     if sys.platform == "darwin":
-        resources = ROOT / "dist/AutoSkyPlay.app/Contents/Resources"
+        resources = output / 'AutoSkyPlay.app/Contents/Resources'
         shutil.copy(ROOT / "LICENSE", resources / "LICENSE")
         shutil.copy(ROOT / "THIRD_PARTY_NOTICES.md", resources / "THIRD_PARTY_NOTICES.md")
         info_path = resources.parent / "Info.plist"
@@ -82,7 +87,7 @@ def main():
             plistlib.dump(info, stream)
         # Resource additions invalidate PyInstaller's initial ad-hoc signature.
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-",
-                        str(ROOT / "dist/AutoSkyPlay.app")], check=True)
+                        str(output / 'AutoSkyPlay.app')], check=True)
     if args.installer:
         if sys.platform != "win32":
             parser.error("Windows 安装包必须在 Windows 上构建")
@@ -102,11 +107,11 @@ def main():
                 "-volname",
                 "AutoSkyPlay",
                 "-srcfolder",
-                str(ROOT / "dist/AutoSkyPlay.app"),
+                str(output / 'AutoSkyPlay.app'),
                 "-ov",
                 "-format",
                 "UDZO",
-                str(ROOT / "dist/AutoSkyPlay.dmg"),
+                str(output / 'AutoSkyPlay.dmg'),
             ],
             check=True,
         )

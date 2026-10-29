@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import queue
 import shutil
@@ -168,8 +169,17 @@ class TranscriptionTask:
                 self.cache.put(self.audio, self.work / "source.audio")
             self.emit("ready", 100, result=self.result, cover=cover)
         except Exception as exc:
+            details = dict(getattr(exc, 'details', {}))
+            if not self.cancelled.is_set():
+                from .diagnostics import save_failure
+                try:
+                    details['diagnostic_path'] = str(save_failure(self.directory, self.work, str(exc), details).resolve())
+                except (OSError, ValueError):
+                    logging.getLogger(__name__).exception('保存扒谱诊断失败')
+                logging.getLogger(__name__).error('扒谱失败：%s；诊断：%s', str(exc), details.get('diagnostic_path', self.work))
             self.emit("cancelled" if self.cancelled.is_set() else "error",
-                      message="扒谱已取消" if self.cancelled.is_set() else str(exc))
+                      message="扒谱已取消" if self.cancelled.is_set() else str(exc),
+                      diagnostic_path=details.get('diagnostic_path'))
         finally:
             stop_process(self.process)
             with self.cleanup_lock:
@@ -179,6 +189,7 @@ class TranscriptionTask:
             self.emit("finished")
 
     def _run_muscriptor(self):
+        from .decoding import DECODING_POLICY
         from .devices import DEVICE_POLICY
         from .models import MODELS, RUNTIME_REVISION, digest
         source_sha = digest(self.work / 'source.audio', self.cancelled.is_set)
@@ -187,7 +198,7 @@ class TranscriptionTask:
                         runtime=RUNTIME_REVISION, engine=self.engine.version, device=self.engine.device,
                         worker_identity=self.engine.config.get('runtime_identity'), device_policy=DEVICE_POLICY,
                         request=json.loads((self.work / 'request.json').read_text(encoding="utf-8")),
-                        decoding='greedy-batch1-prelude-strict-v1')
+                        decoding=DECODING_POLICY)
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         cache = self.directory / 'transcription' / 'results' / (key + '.json')
         if cache.exists():
@@ -331,6 +342,20 @@ class TranscriptionTask:
                         continue
                 code = self.process.wait(timeout=5)
                 if error or code or not done:
+                    from .decoding import read_request, worker_failure_message
+                    # Older components exposed only a generic error. Recover a
+                    # precise decoder cause from the bounded stderr tail too.
+                    errors.flush()
+                    with (work / 'engine.stderr').open('rb') as log:
+                        size = log.seek(0, 2)
+                        log.seek(max(0, size - 65536))
+                        tail = log.read().decode('utf-8', errors='replace')
+                    request = read_request(work)
+                    decoder_message, decoder_details = worker_failure_message(RuntimeError(tail), request)
+                    if decoder_message:
+                        error = decoder_message
+                        failure_details.update(decoder_details)
+                    failure_details.update(engine_stage=engine.backend, stage_log=str(work / 'engine.stderr'))
                     raise EngineFailure(error or "本地扒谱引擎异常退出，请重新安装组件或选择更短片段",
                                         failure_details)
                 return done

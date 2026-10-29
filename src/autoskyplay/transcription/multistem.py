@@ -11,6 +11,7 @@ import numpy as np
 import soundfile as sf
 
 from ..score import atomic_json
+from .decoding import DECODING_POLICY, SOURCE_NAMES
 from .devices import DEVICE_POLICY
 from .engine import Engine
 from .events import EventResult
@@ -138,11 +139,11 @@ def run_multistem(task):
         copy_file(work / f'{name}.wav', folder / 'source.audio')
         atomic_json(folder / 'request.json', dict(start=0, length=duration, audio_source=name,
                                                  input_origin_seconds=task.start_seconds, input_scale=1))
-        task.emit('pitch', source='MuScriptor', message=f'独立识别 {name} 器乐轨')
+        task.emit('pitch', source=name, message=f'独立识别{SOURCE_NAMES[name]}')
         stage('instrument-' + name, dict(input_pcm_sha256=pcm[name], model=MODELS[task.engine.model],
                                         runtime=RUNTIME_REVISION, worker=VERSION,
                                         device=task.engine.device, device_policy=DEVICE_POLICY,
-                                        decoding='greedy-batch1-prelude-strict-v1', input_scale=1),
+                                        decoding=DECODING_POLICY, input_scale=1),
               folder, ('events.json',), commands['background'], backend='muscriptor', device=task.engine.device)
         branches[name] = EventResult.load(folder / 'events.json')
     if any(abs(b.duration_ms - duration * 1000) > 2 for b in branches.values()):

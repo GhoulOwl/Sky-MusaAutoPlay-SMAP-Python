@@ -6,7 +6,6 @@ import json
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 
 if not getattr(sys, 'frozen', False):
@@ -26,6 +25,12 @@ def run(args):
     from muscriptor.events import NoteEndEvent, ProgressEvent
 
     from autoskyplay.transcription import worker
+    from autoskyplay.transcription.decoding import (
+        DECODING_POLICY,
+        PITCHED_INPUTS,
+        pitched_model_class,
+        strict_decode,
+    )
     from autoskyplay.transcription.devices import device_event, select_device
     from autoskyplay.transcription.engine import MUSCRIPTOR_VERSION
     from autoskyplay.transcription.events import EventResult, ModelNote
@@ -72,31 +77,40 @@ def run(args):
         if preprocessing['omitted_tail_ms']:
             emit('notice', message=f"背景轨末尾 {preprocessing['omitted_tail_ms']/1000:.2f} 秒低于数值噪声门限，原始浮点文件仍完整保留")
     model_duration = len(model_audio)/sr*1000
+    model_class = pitched_model_class(TranscriptionModel) if input_source in PITCHED_INPUTS else TranscriptionModel
     store = ModelStore(Path(args.models).parent.parent)
     with store.lock(args.model):
         weights = store.verify(args.model)
         emit('load', message=f'加载 MuScriptor {args.model} · {device}')
-        beginning = time.perf_counter()
-        model = TranscriptionModel.load_model(weights, device=device)
-        loaded = time.perf_counter()
-        notes, dropped = [], 0
-        # Strict EOS: an incomplete decoder window fails visibly, never masquerades as a rest.
-        for event in model.transcribe(torch.from_numpy(model_audio[None]), batch_size=1, prelude_forcing=True,
-                                      use_sampling=False, beam_size=1, no_eos_is_ok=False):
-            if isinstance(event, NoteEndEvent):
-                n = event.start_event
-                a, b = max(0., n.start_time*1000), min(model_duration, event.end_time*1000)
-                if b > a:
-                    notes.append(ModelNote(n.pitch, a, b-a, n.instrument, n.index,
-                                           audio_source=input_source,
-                                           event_id=f'muscriptor:{input_source}:{n.index}' if input_source != 'original' else ''))
-                else:
-                    dropped += 1
-            elif isinstance(event, ProgressEvent):
-                emit('pitch', int(100*event.completed/max(1, event.total)),
-                     source=args.model, completed=event.completed, total=event.total)
-        elapsed = time.perf_counter() - loaded
-    del model
+        def consume(model, *, beam_size):
+            notes, dropped = [], 0
+            # No chunk slicing, no token-budget change and no incomplete EOS.
+            for event in model.transcribe(torch.from_numpy(model_audio[None]), batch_size=1, prelude_forcing=True,
+                                          use_sampling=False, beam_size=beam_size, no_eos_is_ok=False):
+                if isinstance(event, NoteEndEvent):
+                    n = event.start_event
+                    a, b = max(0., n.start_time*1000), min(model_duration, event.end_time*1000)
+                    if b > a:
+                        notes.append(ModelNote(n.pitch, a, b-a, n.instrument, n.index,
+                                               audio_source=input_source,
+                                               event_id=f'muscriptor:{input_source}:{n.index}' if input_source != 'original' else ''))
+                    else:
+                        dropped += 1
+                elif isinstance(event, ProgressEvent):
+                    emit('pitch', int(100*event.completed/max(1, event.total)),
+                         source=input_source, model=args.model, completed=event.completed, total=event.total)
+            return notes, dropped
+
+        def release(model):
+            # Drop the bound model reference before the next load. The helper
+            # exits the failed generator/exception scope before retrying.
+            if device == 'mps':
+                torch.mps.synchronize()
+
+        (notes, dropped), attempts = strict_decode(
+            lambda precision: model_class.load_model(weights, device=device, dtype=precision),
+            consume, release, device=device, notice=lambda message: emit('notice', message=message))
+        elapsed = sum(a['inference_seconds'] for a in attempts)
     if device == 'mps':
         torch.mps.empty_cache()
     elif device == 'cuda':
@@ -137,8 +151,11 @@ def run(args):
                     model_repository=f'MuScriptor/muscriptor-{args.model}', model_source='modelscope.cn',
                     model_revision=MODELS[args.model]['revision'],
                     model_sha256=MODELS[args.model]['files']['model.safetensors'][1],
-                    device=device, device_selection=device_selection, load_seconds=loaded-beginning, inference_seconds=elapsed,
-                    batch_size=1, prelude_forcing=True, beam_size=1, sampling=False, seed=0,
+                    device=device, device_selection=device_selection,
+                    load_seconds=sum(a['load_seconds'] for a in attempts), inference_seconds=elapsed,
+                    decoding_policy=DECODING_POLICY, precision=attempts[-1]['precision'], decoding_attempts=attempts,
+                    excluded_token_types=['drum'] if input_source in PITCHED_INPUTS else [],
+                    batch_size=1, prelude_forcing=True, beam_size=attempts[-1]['beam_size'], sampling=False, seed=0,
                     bpm_estimated=valid, model_confidence_available=False, dropped_invalid_events=dropped,
                     warnings=['模型输出的零长度或越界音符已忽略'] if dropped else [])
     result = EventResult(notes, duration, bpm if valid else 120, metadata,
@@ -181,13 +198,16 @@ def main():
     except Exception as exc:
         import traceback
         traceback.print_exc(file=sys.stderr)
+        from autoskyplay.transcription.decoding import read_request, worker_failure_message
         from autoskyplay.transcription.devices import error_details
+        request = read_request(args.work)
+        decoder_message, decoder_details = worker_failure_message(exc, request)
         message = str(exc) if isinstance(exc, ValueError) else 'MuScriptor 运行失败，请选择 CPU 或较短片段重试'
         if 'out of memory' in str(exc).lower() or isinstance(exc, MemoryError):
             message = '内存不足，请选择 small、关闭其他程序或改用 CPU 后重试'
-        elif 'did not emit EOS' in str(exc):
-            message = '片段音符过密，模型输出不完整；请缩小范围后重试，本次不会保存为完整草稿'
-        emit('error', message=message, **error_details(exc))
+        elif decoder_message:
+            message = decoder_message
+        emit('error', message=message, **dict(error_details(exc), **decoder_details))
         sys.exit(1)
 
 

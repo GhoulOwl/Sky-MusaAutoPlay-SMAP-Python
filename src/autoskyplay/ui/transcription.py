@@ -496,6 +496,8 @@ class TranscriptionDialog(ServiceDialog):
             if self.backend_choice.currentData() == 'hybrid':
                 engine = select_hybrid_engine(self.host.store.directory, self.model_choice.currentData(), self.device_choice.currentData())
                 suffix = '六轨就绪' if engine.config.get('multistem') else f'旧分轨流程就绪；升级 {HYBRID_COMPONENT_VERSION} 可排除和声并分轨识谱'
+                if engine.version == '4.0.0':
+                    suffix = f'4.0.0 旧组件，请升级 {HYBRID_COMPONENT_VERSION}'
                 if sys.platform == 'win32' and not engine.config.get('accelerated_stages', True):
                     suffix = f'旧组件：升级至 {HYBRID_COMPONENT_VERSION} 可启用全阶段 CUDA'
                 self.engine_status.setText(f'GAME medium / MuScriptor {self.model_choice.currentData()} · {suffix}')
@@ -1028,11 +1030,15 @@ class TranscriptionDialog(ServiceDialog):
                     self.device_status.execution(event)
                 elif stage in ('error', 'cancelled', 'notice'):
                     self.failed(event.get('message', '处理失败'))
+                    if event.get('diagnostic_path'):
+                        self.status.setToolTip('故障诊断已保留：' + event['diagnostic_path'])
                 elif stage in STAGE_NAMES:
                     self.progress.setRange(0, 100)
                     self.progress.setValue(max(0, min(100, int(event.get('progress', 0)))))
-                    source = {'vocals': '人声', 'other': '器乐', 'bass': '低音'}.get(event.get('source'), '')
-                    self.status.setText(STAGE_NAMES[stage] + (' · ' + source if source else '') + '…')
+                    source = {'vocals': '人声', 'lead_vocals': '主唱', 'other': '其他轨', 'bass': '贝斯轨',
+                              'guitar': '吉他轨', 'piano': '钢琴轨', 'original': '原混音',
+                              'background': '混合背景', 'background_no_drums': '无鼓背景'}.get(event.get('source'), '')
+                    self.status.setText(event.get('message') or STAGE_NAMES[stage] + (' · ' + source if source else '') + '…')
         playing = self.player.state == State.PLAYING or self.media.playbackState() == QMediaPlayer.PlaybackState.PlayingState
         if playing and not self.seek.isSliderDown():
             position = self.player.position_ms if self.preview_mode.currentIndex() == 2 else self.media.position() - self.media_offset

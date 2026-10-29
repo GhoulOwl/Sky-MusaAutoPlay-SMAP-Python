@@ -20,9 +20,10 @@ from ..score import atomic_json
 
 ENGINE_VERSION = "1.1.0"
 MUSCRIPTOR_VERSION = '2.2.0'
-HYBRID_COMPONENT_VERSION = '4.0.0'
+HYBRID_COMPONENT_VERSION = '4.0.1'
 COMPONENT_BACKENDS = {'2.0.0': 'muscriptor', '2.1.0': 'muscriptor', MUSCRIPTOR_VERSION: 'muscriptor',
-                      '3.0.0': 'hybrid', '3.1.0': 'hybrid', '3.2.0': 'hybrid', HYBRID_COMPONENT_VERSION: 'hybrid'}
+                      '3.0.0': 'hybrid', '3.1.0': 'hybrid', '3.2.0': 'hybrid', '4.0.0': 'hybrid',
+                      HYBRID_COMPONENT_VERSION: 'hybrid'}
 SUPPORTED_VERSIONS = {"1.0.0", ENGINE_VERSION, *COMPONENT_BACKENDS}
 MAX_COMPONENT_BYTES = 6 * 1024 ** 3
 
@@ -136,7 +137,7 @@ def find_engine(directory: Path, backend='legacy') -> Engine | None:
             if actual != backend:
                 raise ValueError()
             if backend == 'hybrid':
-                multistem = metadata['version'] == '4.0.0'
+                multistem = metadata['version'] in ('4.0.0', HYBRID_COMPONENT_VERSION)
                 stages = ('separate', 'game', 'background', 'features', 'vocal_split') if multistem else (
                     'separate', 'game', 'background', 'features')
                 commands = {name: [str(executable), '--stage', name] for name in stages}
@@ -263,7 +264,7 @@ def install_engine(archive: Path, directory: Path, cancelled=lambda: False, prog
                 raise ValueError("扒谱组件缺少引擎或模型")
             if backend == 'hybrid' and 'models/models.json' not in files:
                 raise ValueError('混合组件缺少固定分轨模型清单')
-            if manifest['version'] == '4.0.0':
+            if manifest['version'] in ('4.0.0', HYBRID_COMPONENT_VERSION):
                 from .multistem_models import ASSETS
                 for asset in ASSETS.values():
                     if files.get('models/' + asset['filename']) != asset['sha256']:
