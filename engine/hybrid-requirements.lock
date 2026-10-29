@@ -3,6 +3,7 @@ annotated-types==0.8.0
 antlr4-python3-runtime==4.9.3
 anyio==4.15.1
 audioread==3.1.0
+beat-this==1.1.0
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.2
@@ -11,6 +12,7 @@ decorator==5.3.1
 demucs==4.1.0
 einops==0.8.1
 filelock==4.1.1
+flatbuffers==25.12.19
 fsspec==2026.9.0
 h11==0.16.0
 hf-xet==1.7.0
@@ -36,10 +38,12 @@ networkx==3.7
 numba==0.68.0
 numpy==1.26.4
 omegaconf==2.3.0
+onnxruntime==1.29.0
 packaging==26.3
 platformdirs==4.13.0
 pooch==1.9.0
 psutil==7.1.0
+protobuf==7.36.2
 pycparser==3.11
 pydantic==2.12.3
 pydantic-core==2.41.4
@@ -47,6 +51,7 @@ pyinstaller==6.16.0
 pyinstaller-hooks-contrib==2026.8
 pyyaml==6.0.3
 requests==2.34.2
+rotary-embedding-torch==0.6.5
 safetensors==0.6.2
 scikit-learn==1.9.1
 scipy==1.17.1

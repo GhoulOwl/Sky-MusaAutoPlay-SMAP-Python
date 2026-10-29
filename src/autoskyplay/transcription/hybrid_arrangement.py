@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from .events import _line
+from .events import VOCAL_SOURCES, _line, stem_supports
 from .segmentation import runs
 
 
@@ -31,7 +31,7 @@ def arrange_hybrid(result, minimum=80, mode="simple", overrides=()):
     # Presence is an acoustic guard, not a calibrated classifier or model score.
     guard = (vocal_energy >= -50) & (ratio >= 0.22)
     for n in result.raw_notes:
-        if n.audio_source != "vocals":
+        if n.audio_source not in VOCAL_SOURCES:
             continue
         if n.duration_ms < minimum or not 45 <= n.pitch <= 96:
             record(n, "omit", "人声候选过短或超出当前旋律识别范围")
@@ -48,12 +48,17 @@ def arrange_hybrid(result, minimum=80, mode="simple", overrides=()):
             guard[a:b] = True
     groups = defaultdict(list)
     for n in result.raw_notes:
-        if n.audio_source == "vocals":
+        if n.audio_source in (*VOCAL_SOURCES, 'backing_vocals', 'drums'):
+            continue
+        if not stem_supports(result, n):
+            record(n, 'review', '器乐候选缺少自身分轨能量支持；原始事件保留')
             continue
         if n.instrument == "voice":
             record(n, "omit", "背景分支的人声标签疑似残留，不能作为主唱")
             continue
-        if n.instrument in ("drums", "electric_bass", "acoustic_bass") or n.duration_ms < minimum:
+        bass_solo = result.metadata.get('pipeline') == 'multistem' and n.audio_source == 'bass'
+        if (n.instrument == 'drums' or n.instrument in ('electric_bass', 'acoustic_bass') and not bass_solo
+                or n.duration_ms < minimum):
             continue
         if not 45 <= n.pitch <= 96 or np.max(energy[span(n)], initial=-100) < -60:
             continue
@@ -122,7 +127,7 @@ def arrange_hybrid(result, minimum=80, mode="simple", overrides=()):
             selected[-1] = replace(last, duration_ms=n.start_ms - last.start_ms)
             record(last, "trim_overlap", "同声部后续起音形成单音旋律边界")
         selected.append(n)
-        record(n, "melody", "可靠人声乐句" if n.audio_source == "vocals" else "连续器乐候选")
+        record(n, "melody", "可靠人声乐句" if n.audio_source in VOCAL_SOURCES else "连续器乐候选")
     notes = [n.melody() for n in selected]
     for n in selected:
         for reason in n.review_reasons:
@@ -180,7 +185,10 @@ def arrange_hybrid(result, minimum=80, mode="simple", overrides=()):
     if mode == "simple":
         chosen_ids = {n.event_id for n in notes}
         for n in result.raw_notes:
-            if n.audio_source == "vocals" or n.instrument in ("voice", "drums") or n.identity in chosen_ids:
+            if (n.audio_source in (*VOCAL_SOURCES, 'backing_vocals', 'drums')
+                    or n.instrument in ('voice', 'drums') or n.identity in chosen_ids):
+                continue
+            if not stem_supports(result, n):
                 continue
             if n.duration_ms < max(80, minimum):
                 continue

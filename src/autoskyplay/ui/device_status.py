@@ -6,7 +6,9 @@ import json
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
-TITLES = dict(separate='分轨', separation='分轨', game='人声', background='背景', muscriptor='原混音')
+TITLES = dict(separate='分轨', separation='分轨', game='主唱', background='器乐', muscriptor='MuScriptor',
+              vocal_split='去和声', **{'instrument-bass': '贝斯', 'instrument-guitar': '吉他',
+                                       'instrument-piano': '钢琴', 'instrument-other': '其他'})
 
 
 class DeviceStatus(QWidget):
@@ -36,6 +38,7 @@ class DeviceStatus(QWidget):
         self.buffer = b''
         self.current = ''
         self.stopped = False
+        self.multistem = False
         self.process.readyReadStandardOutput.connect(self.read_output)
 
     def stop(self):
@@ -52,7 +55,9 @@ class DeviceStatus(QWidget):
         self.stop()
         self.identity, self.requested = identity, requested
         self.reports = {}
-        if engine.version not in ('3.2.0', '2.2.0'):
+        self.multistem = engine.config.get('multistem', False)
+        self.setFixedHeight(60 if self.multistem else 44)
+        if engine.version not in ('4.0.0', '3.2.0', '2.2.0'):
             self.summary.setText('组件不支持预检，请升级')
             self.summary.setToolTip('识别时仍按原设备策略执行；新版组件提供硬件检测和 CPU 自动重试。')
             return
@@ -138,11 +143,13 @@ class DeviceStatus(QWidget):
         name = next(iter(dict.fromkeys(names)), '')
         choices = {s: r.get('stages', {}).get(s) for s, r in self.reports.items()}
         if len(choices) == 3 and len(set(choices.values())) == 1 and all(choices.values()):
-            stages = '全阶段 ' + next(iter(choices.values())).upper()
+            stages = ('识谱 ' if self.multistem else '全阶段 ') + next(iter(choices.values())).upper()
         elif len(choices) == 3 and choices.get('separate') == choices.get('game') and all(choices.values()):
             stages = f"分轨/人声 {choices['game'].upper()} · 背景 {choices['background'].upper()}"
         else:
             stages = ' · '.join(rows)
+        if self.multistem:
+            stages += ' · 去和声 CPU'
         name = self.summary.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, max(100, self.width()-34))
         self.summary.setText(name + '\n预计：' + stages)
         reasons = []

@@ -8,10 +8,11 @@ import numpy as np
 import soundfile as sf
 
 from .boundaries import spectral_change
+from .events import VOCAL_SOURCES
 
 
 def annotate_vocal_boundaries(result, path, cancelled=lambda: False):
-    notes = sorted((n for n in result.raw_notes if n.audio_source == "vocals"), key=lambda n: n.start_ms)
+    notes = sorted((n for n in result.raw_notes if n.audio_source in VOCAL_SOURCES), key=lambda n: n.start_ms)
     reviews, by_id = [], {}
     with sf.SoundFile(path) as stream:
         rate = stream.samplerate

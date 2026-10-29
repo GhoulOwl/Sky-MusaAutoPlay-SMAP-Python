@@ -15,6 +15,18 @@ import numpy as np
 from ..score import atomic_json
 from .melody import MelodyNote
 
+VOCAL_SOURCES = ('vocals', 'lead_vocals')
+
+
+def stem_supports(result, note):
+    """A loud mixture cannot supply missing evidence for a quiet source stem."""
+    levels = result.analysis.get('stem_energy_db', {}).get(note.audio_source)
+    if levels is None:
+        return True  # legacy results predate independent instrument evidence
+    hop = result.analysis.get('evidence_hop_ms', 100)
+    start, end = int(note.start_ms / hop), math.ceil((note.start_ms + note.duration_ms) / hop)
+    return bool(np.max(levels[start:max(start + 1, end)], initial=-160) >= -60)
+
 
 @dataclass(frozen=True)
 class ModelNote:
@@ -38,7 +50,7 @@ class ModelNote:
     @property
     def source(self):
         if self.audio_source != 'original':
-            return 'vocals' if self.audio_source == 'vocals' else 'other'
+            return 'vocals' if self.audio_source in VOCAL_SOURCES else 'other'
         return 'vocals' if self.instrument == 'voice' else 'other'
 
     def melody(self, role='melody'):
@@ -64,6 +76,9 @@ class EventResult:
             raise ValueError('音符事件结果无效')
         ids, identities = set(), set()
         for n in self.raw_notes:
+            if (self.metadata.get('pipeline') == 'multistem'
+                    and n.audio_source not in ('lead_vocals', 'bass', 'guitar', 'piano', 'other')):
+                raise ValueError('六轨识谱结果包含被排除的来源')
             if (type(n.pitch) is not int or not 0 <= n.pitch <= 127 or type(n.index) is not int
                     or n.index in ids or not isinstance(n.instrument, str) or len(n.instrument) > 80
                     or not all(math.isfinite(t) for t in (n.start_ms, n.duration_ms))
@@ -86,6 +101,12 @@ class EventResult:
                 or (beats < 0).any() or (beats > self.duration_ms).any() or (np.diff(beats) <= 0).any()):
             raise ValueError('拍点无效')
         confidence = self.analysis.get('beat_confidence', 0)
+        for beat_field in ('downbeats_ms', 'detected_beats_ms'):
+            extra_beats = np.asarray(self.analysis.get(beat_field, []))
+            if (extra_beats.ndim != 1 or len(extra_beats) > 10000 or not np.isfinite(extra_beats).all()
+                    or (extra_beats < 0).any() or (extra_beats > self.duration_ms).any()
+                    or (np.diff(extra_beats) <= 0).any()):
+                raise ValueError('拍点候选无效')
         energy = np.asarray(self.analysis.get('energy_db', []))
         if (not isinstance(confidence, (float, int)) or not 0 <= confidence <= 1
                 or energy.ndim != 1 or len(energy) > 6001 or not np.isfinite(energy).all()):
@@ -98,6 +119,10 @@ class EventResult:
                     or not np.isfinite(chroma).all() or not np.isfinite(levels).all()
                     or (chroma < 0).any()):
                 raise ValueError('和声证据格式无效')
+        for levels in self.analysis.get('stem_energy_db', {}).values():
+            values = np.asarray(levels)
+            if values.ndim != 1 or len(values) != math.ceil(self.duration_ms / 100) or not np.isfinite(values).all():
+                raise ValueError('分轨能量证据无效')
 
     @classmethod
     def load(cls, path, metadata=None):

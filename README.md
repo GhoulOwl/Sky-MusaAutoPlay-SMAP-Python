@@ -35,10 +35,13 @@ uv run autoskyplay
 
 主页「AI扒谱」支持网易云搜索与链接 / ID 选歌、真实波形选段，在本机识别人声主旋律，
 试听并生成可编辑的光遇曲谱或 MIDI。支持整首与指定片段，试听音频会明确标注。
-默认使用 Demucs＋GAME＋MuScriptor，背景识别使用 small，medium 可选。首次导入 Hybrid 3.1.0 运行组件，
+默认使用 Demucs＋GAME＋MuScriptor，器乐识别使用 small，medium 可选。Hybrid 4.0.0 支持主唱去和声、
+贝斯／吉他／钢琴／其他分别识谱，鼓轨只分析节奏；新增共享拍点修正和调性候选。
+旧 3.x 组件继续使用原混合流程。首次导入对应平台的 Hybrid 4.0.0 运行组件，
 再在「设置 → 扒谱模型管理」安装 GAME medium，并从 ModelScope 下载 MuScriptor 模型；支持取消续传和本地导入。
 源码运行先执行 `uv run python scripts/prepare_hybrid.py --package`。
-Windows 组件默认包含 CUDA 12.8，GPU 可用时三个阶段优先使用 GPU，不可用时使用 CPU；真机 GPU 验证尚待完成。
+Windows 组件默认包含 CUDA 12.8，Demucs、GAME、MuScriptor 在可用时优先使用 GPU，
+Karaoke 使用 ONNX Runtime CPU；真机 GPU 验证尚待完成。
 模型权重长期保留，限非商业使用，分别遵循 GAME / MuScriptor 许可。工作台支持历史草稿自动保存、只读卷帘预览、
 独立音色试听和编辑回写；显示网格与节拍吸附分开设置。原混音草稿支持小节／片段精修，对照试听后接受为新版本，原稿保留。
 钢琴默认稀疏双音和弦，保留单音伴奏选项；局部精修可自动向外寻找完整音符边界，显示实际范围后试听接受。

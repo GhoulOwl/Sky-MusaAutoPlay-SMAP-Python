@@ -12,7 +12,7 @@ import soundfile as sf
 from ..audio import ASSETS, SAMPLE_RATE, SUSTAIN, loop_sample, resample
 from ..midi import SKY_MIDI
 from ..score import Note, ScoreError
-from .events import EventResult
+from .events import VOCAL_SOURCES, EventResult, stem_supports
 from .harmonic_structure import chord_path, phrase_boundaries, pulse_from_evidence, voice_path
 from .local import MidiResult
 from .melody import MelodyNote
@@ -96,8 +96,8 @@ def allowed_parts(start, end, blocked):
 def evidence_notes(result, minimum):
     if isinstance(result, EventResult):
         return [n.melody('accompaniment') for n in result.raw_notes
-                if n.instrument not in ('voice', 'drums') and n.audio_source != 'vocals'
-                and n.duration_ms >= minimum]
+                if n.instrument not in ('voice', 'drums') and n.audio_source not in (*VOCAL_SOURCES, 'backing_vocals', 'drums')
+                and n.duration_ms >= minimum and stem_supports(result, n)]
     if isinstance(result, MidiResult):
         return [replace(n, role='accompaniment', event_id=f'midi:{i}')
                 for i, n in enumerate(result.raw_notes) if n.duration_ms >= minimum]
@@ -132,8 +132,19 @@ def harmony_windows(result, evidence, blocked):
         if end-start < 80:
             continue
         hist = np.zeros(12)
-        for n in active:
-            hist[n.pitch % 12] += min(end, n.start_ms+n.duration_ms) - max(start, n.start_ms)
+        if getattr(result, 'metadata', {}).get('pipeline') == 'multistem':
+            # Doubling or bleed across stems must not multiply a pitch class's
+            # vote. Union its sounding intervals; raw events remain untouched.
+            for pc in range(12):
+                right = start
+                spans = sorted((max(start, n.start_ms), min(end, n.start_ms+n.duration_ms))
+                               for n in active if n.pitch % 12 == pc)
+                for a, b in spans:
+                    hist[pc] += max(0., b-max(a, right))
+                    right = max(right, b)
+        else:
+            for n in active:
+                hist[n.pitch % 12] += min(end, n.start_ms+n.duration_ms) - max(start, n.start_ms)
         index = int(np.searchsorted(beats, start+1e-6)-1)
         acoustic = (reliable and 0 <= index < len(chroma) and index < len(levels) and levels[index] >= -55)
         features = np.asarray(chroma[index], dtype=float) if acoustic else np.zeros(12)
@@ -142,7 +153,8 @@ def harmony_windows(result, evidence, blocked):
         chord = chord_from_chroma(combined)
         if chord is None and hist.max() > 0:
             pcs = set(np.flatnonzero(hist >= hist.max() * .22))
-            bass = [n for n in active if n.instrument in ('electric_bass', 'acoustic_bass') or n.source == 'bass']
+            bass = [n for n in active if n.instrument in ('electric_bass', 'acoustic_bass')
+                    or n.source == 'bass' or n.audio_source == 'bass']
             roots = {n.pitch % 12 for n in bass}
             candidates = [(r, q, {r, (r+t) % 12, (r+7) % 12})
                           for r in roots for q, t in (('major', 4), ('minor', 3))

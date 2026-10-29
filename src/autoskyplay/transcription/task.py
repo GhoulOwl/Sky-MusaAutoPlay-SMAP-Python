@@ -258,7 +258,7 @@ class TranscriptionTask:
                    "--parent", str(os.getpid())]
         if getattr(engine, 'backend', 'legacy') == 'muscriptor':
             command += ['--model', engine.model, '--device', engine.device]
-        elif getattr(engine, 'backend', 'legacy') in ('game', 'separate'):
+        elif getattr(engine, 'backend', 'legacy') in ('game', 'separate', 'vocal_split'):
             command += ['--device', engine.device]
         command += list(extra)
         env = os.environ.copy()

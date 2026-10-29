@@ -19,7 +19,8 @@ from .events import EventResult
 from .local import MidiResult
 from .melody import MelodyNote, PitchResult
 
-AUDIO_FILES = ('original.wav', 'vocals.wav', 'other.wav', 'bass.wav', 'drums.wav', 'background.wav')
+AUDIO_FILES = ('original.wav', 'vocals.wav', 'other.wav', 'bass.wav', 'drums.wav', 'background.wav',
+               'lead_vocals.wav', 'backing_vocals.wav', 'guitar.wav', 'piano.wav')
 
 
 def creation_time(data, directory):

@@ -16,6 +16,7 @@ from torch_runtime import inspect_runtime, install_runtime, runtime_variant, ver
 from autoskyplay.transcription.engine import HYBRID_COMPONENT_VERSION, platform_tag
 from autoskyplay.transcription.game_models import GAME_REVISION
 from autoskyplay.transcription.models import RUNTIME_REVISION
+from autoskyplay.transcription.multistem_models import ASSETS
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV = ROOT / "build/hybrid-venv"
@@ -60,17 +61,15 @@ def main():
         pytorch=inspect_runtime(PYTHON, variant, torchaudio=True),
         game_revision=GAME_REVISION,
         muscriptor_revision=RUNTIME_REVISION,
-        process_policy="sequential; separate/game/background/features are separate processes",
+        multistem_assets=ASSETS,
+        process_policy='sequential; separate/vocal_split/features/game/four instruments are separate processes',
     )
     (ENV / "runtime.json").write_text(json.dumps(runtime, indent=2))
+    from prepare_multistem_assets import download_models
+    models = download_models()
     run(PYTHON, worker, "--check")
     if not args.package:
         return
-    # Fixed Demucs files are shared with the old preparer. This downloads only
-    # missing pinned separation files, never GAME/MuScriptor weights at inference.
-    from prepare_transcription import download_models
-
-    download_models()
     run(
         PYTHON,
         "-m",
@@ -98,6 +97,10 @@ def main():
         "librosa",
         "--copy-metadata",
         "demucs",
+        '--collect-all', 'onnxruntime',
+        '--collect-submodules', 'beat_this',
+        '--copy-metadata', 'beat-this',
+        '--hidden-import', 'demucs.htdemucs',
         "--collect-submodules",
         "scipy._external",
         "--collect-submodules",
@@ -120,7 +123,7 @@ def main():
     )
     bundle = ROOT / "build/hybrid-dist/AutoSkyPlay-Hybrid"
     shutil.copy2(ENV / "runtime.json", bundle / "runtime.json")
-    shutil.copytree(ROOT / "build/transcription-models", bundle / "models", dirs_exist_ok=True)
+    shutil.copytree(models, bundle / "models", dirs_exist_ok=True)
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", bundle / "THIRD_PARTY_NOTICES.md")
     for name in ("game", "muscriptor"):
         shutil.copy2(ROOT / f"build/{name}-src/LICENSE", bundle / f"{name}-LICENSE")

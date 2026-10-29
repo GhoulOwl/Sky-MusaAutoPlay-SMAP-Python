@@ -85,7 +85,13 @@ def run(args):
     device_event(emit, device, device_selection)
     work = Path(args.work).resolve()
     models = Path(args.models).resolve()
-    verify_models(models)
+    multistem = getattr(args, 'separation_model', 'four') == 'six'
+    if multistem:
+        from autoskyplay.transcription.multistem_models import verify_asset
+        model_path = verify_asset(models, 'demucs')
+    else:
+        verify_models(models)
+        model_path = models / '955717e8.safetensors'
     began = time.perf_counter()
     request = json.loads((work / "request.json").read_text(encoding="utf-8"))
     start, length = float(request["start"]), float(request["length"])
@@ -114,7 +120,7 @@ def run(args):
         emit("notice", message="实际音频短于所选范围，已按可用音频处理")
     emit("separate", 0, message=f'分离音轨 · {device}')
     load_started = time.perf_counter()
-    model = load_safetensors_model(models / "955717e8.safetensors").eval()
+    model = load_safetensors_model(model_path).eval()
     loaded = time.perf_counter()
     # HTDemucs otherwise pads short inference chunks back to its 7.8 s training
     # length. Its supported variable-length mode bounds CPU activation memory.
@@ -124,7 +130,8 @@ def run(args):
     with ExitStack() as stack:
         outputs = {name: stack.enter_context(sf.SoundFile(work / (name + '.wav'), 'w', samplerate=sr,
                                                            channels=2, subtype='FLOAT'))
-                   for name in ('vocals', 'other', 'bass', 'drums')}
+                   for name in (('vocals', 'other', 'bass', 'drums', 'guitar', 'piano') if multistem
+                                else ('vocals', 'other', 'bass', 'drums'))}
         for offset in range(0, len(original), block):
             left, right = max(0, offset - margin), min(len(original), offset + block + margin)
             waveform = torch.from_numpy(original[left:right].T.copy())
@@ -197,6 +204,7 @@ def main():
     parser.add_argument("--parent", type=int, default=0)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--separate-only", action="store_true")
+    parser.add_argument('--separation-model', choices=['four', 'six'], default='four')
     parser.add_argument("--pitch-only", action="store_true")
     parser.add_argument("--device", choices=['auto', 'cpu', 'mps', 'cuda'], default='cpu')
     parser.add_argument("--probe-devices", action="store_true")

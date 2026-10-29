@@ -35,7 +35,7 @@ def run(args):
     request = json.loads((work / 'request.json').read_text(encoding="utf-8"))
     start, length = float(request['start']), float(request['length'])
     input_source = request.get('audio_source', 'original')
-    if input_source not in ('original', 'background', 'background_no_drums'):
+    if input_source not in ('original', 'background', 'background_no_drums', 'bass', 'guitar', 'piano', 'other'):
         raise ValueError('MuScriptor 输入来源无效')
     if input_source != 'original' and start != 0:
         raise ValueError('分轨背景已对应选段，不能再次应用原曲入点')

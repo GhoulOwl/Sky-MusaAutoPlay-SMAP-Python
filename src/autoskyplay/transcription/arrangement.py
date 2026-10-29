@@ -248,6 +248,7 @@ def build_score(result, name, *, threshold=.35, minimum=80, mode='auto', ornamen
                     else 6 if isinstance(result, EventResult) else 5,
                     generation_mode=requested_mode, instrument=instrument,
                     beats_ms=np.asarray(analysis.get('beats_ms', [])).tolist(),
+                    downbeats_ms=analysis.get('downbeats_ms', []),
                     beat_confidence=float(analysis.get('beat_confidence', 0)),
                     use_detected_beats=use_detected_beats)
     score, stats = to_score(notes, name, bpm or result.bpm, shift, quantize, metadata, author, grid_offset_ms,

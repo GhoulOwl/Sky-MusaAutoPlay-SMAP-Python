@@ -52,6 +52,9 @@ def run(args):
 
     work = Path(args.work)
     request = json.loads((work / "request.json").read_text(encoding="utf-8"))
+    input_source = request.get('audio_source', 'vocals')
+    if input_source not in ('vocals', 'lead_vocals'):
+        raise ValueError('GAME 输入来源无效')
     settings = dict(
         boundary_threshold=0.2,
         presence_threshold=0.2,
@@ -200,7 +203,7 @@ def run(args):
                                     "voice",
                                     len(notes),
                                     provider="game",
-                                    audio_source="vocals",
+                                    audio_source=input_source,
                                     event_id=region["event_id"],
                                     raw_pitch_midi=pitch,
                                 )
@@ -236,7 +239,7 @@ def run(args):
         model="medium",
         model_sha256=digest(path),
         input_sha256=digest(work / "vocals.wav"),
-        audio_source="vocals",
+        audio_source=input_source,
         device=device,
         device_selection=device_selection,
         torch=torch.__version__,

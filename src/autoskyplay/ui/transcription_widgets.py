@@ -222,6 +222,11 @@ class PreviewRoll(PianoRoll):
                 color.setAlpha(40)
                 painter.fillRect(QRectF(x, 0, width, 15 * self.row_height), color)
         info = self.score.root.get('transcription', {})
+        # Observed bar candidates are visual hints, not inferred fixed meter.
+        for time in info.get('downbeats_ms', []):
+            x = (time + self.grid_offset_ms) / self.score.ms_per_beat * self.pixels_per_beat
+            painter.setPen(QPen(QColor(c['accent']), 1.3))
+            painter.drawLine(QPointF(x, 0), QPointF(x, 15 * self.row_height))
         beats = info.get('beats_ms', [])
         if info.get('use_detected_beats') and info.get('beat_confidence', 0) >= .55 and len(beats) >= 4:
             for a, b in zip(beats[:-1], beats[1:]):

@@ -64,6 +64,16 @@ def rhythm_harmony(original, drums, harmonic, sr, duration):
         regularity = np.clip(1 - np.std(intervals) / max(1, np.mean(intervals)) * 3, 0, 1)
         support = np.mean(envelope[frames]) / max(float(np.percentile(envelope, 90)), 1e-8)
         confidence = float(regularity * np.clip(support, 0, 1))
+    harmony_features = harmony_at_beats(harmonic, sr, beats)
+    return dict(beats_ms=beats, beat_confidence=np.array(confidence), **harmony_features), bpm if valid else 120., valid
+
+
+def harmony_at_beats(harmonic, sr, beats):
+    import librosa
+
+    rate, hop = 22050, 512
+    if len(beats) < 2:
+        return dict(chroma=np.empty((0, 12)), harmony_energy_db=np.array([]))
     harmony = librosa.resample(harmonic.mean(axis=1), orig_sr=sr, target_sr=rate)
     chroma = librosa.feature.chroma_cqt(y=harmony, sr=rate, hop_length=hop, tuning=0)
     energy = librosa.feature.rms(y=harmony, hop_length=hop)[0]
@@ -73,5 +83,4 @@ def rhythm_harmony(original, drums, harmonic, sr, duration):
         right = max(left + 1, int(b / 1000 * rate / hop))
         rows.append(np.mean(chroma[:, left:right], axis=1))
         levels.append(20 * np.log10(max(1e-8, float(np.mean(energy[left:right])))))
-    return dict(beats_ms=beats, beat_confidence=np.array(confidence),
-                chroma=np.asarray(rows).reshape(-1, 12), harmony_energy_db=np.asarray(levels)), bpm if valid else 120., valid
+    return dict(chroma=np.asarray(rows).reshape(-1, 12), harmony_energy_db=np.asarray(levels))

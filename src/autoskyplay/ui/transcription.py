@@ -261,7 +261,8 @@ class TranscriptionDialog(ServiceDialog):
         central.addLayout(zoom)
         audition = QHBoxLayout()
         self.preview_mode = QComboBox()
-        self.preview_mode.addItems(["原曲", "分离人声", "光遇曲谱", "器乐", "低音", "混合背景"])
+        self.preview_mode.addItems(['原曲', '混合人声', '光遇曲谱', '其他器乐', '贝斯', '混合背景',
+                                   '主唱（去和声）', '吉他', '钢琴', '鼓'])
         self.preview_mode.currentIndexChanged.connect(self.switch_preview)
         self.preview = QPushButton("播放")
         self.preview.clicked.connect(self.toggle_preview)
@@ -302,9 +303,9 @@ class TranscriptionDialog(ServiceDialog):
         settings.setSpacing(6)
         settings.addWidget(label("曲谱生成参数", "brand"))
         self.backend_choice = QComboBox()
-        self.backend_choice.addItem('Demucs＋GAME＋MuScriptor · 默认', 'hybrid')
+        self.backend_choice.addItem('分轨识谱 · 主唱＋五组器乐 · 默认', 'hybrid')
         self.backend_choice.addItem('MuScriptor 原混音', 'muscriptor')
-        self.backend_choice.setToolTip('混合后端使用 GAME medium 识别人声、MuScriptor 识别背景；更耗时，效果需按歌曲复核。')
+        self.backend_choice.setToolTip('4.0 组件分离主唱与和声，主唱送入 GAME；贝斯、吉他、钢琴、其他独立识谱，鼓仅分析节奏。旧组件保留原混合流程。')
         settings.addWidget(self.backend_choice)
         self.model_choice = QComboBox()
         self.model_choice.addItem('MuScriptor small · 默认', 'small')
@@ -352,6 +353,11 @@ class TranscriptionDialog(ServiceDialog):
         bpm_row.addWidget(self.auto_bpm)
         bpm_row.addWidget(self.bpm, 1)
         form.addRow("BPM", bpm_row)
+        self.edit_beats_button = QPushButton('查看／修正共享拍点…')
+        self.edit_beats_button.clicked.connect(self.edit_beats)
+        self.song_analysis_info = label('', 'muted')
+        self.song_analysis_info.setWordWrap(True)
+        self.song_analysis_info.setTextFormat(Qt.TextFormat.PlainText)
         self.threshold = QDoubleSpinBox()
         self.threshold.setRange(.05, .95)
         self.threshold.setSingleStep(.05)
@@ -398,6 +404,8 @@ class TranscriptionDialog(ServiceDialog):
         form.setRowVisible(self.grid_offset, False)
         form_scroll.setWidget(form_host)
         settings.addWidget(form_scroll, 1)
+        settings.addWidget(self.edit_beats_button)
+        settings.addWidget(self.song_analysis_info)
         info = label("调参使用已有识别结果，无需再次运行模型。", "muted")
         info.setWordWrap(True)
         info.setMinimumHeight(34)
@@ -487,7 +495,7 @@ class TranscriptionDialog(ServiceDialog):
         try:
             if self.backend_choice.currentData() == 'hybrid':
                 engine = select_hybrid_engine(self.host.store.directory, self.model_choice.currentData(), self.device_choice.currentData())
-                suffix = '就绪'
+                suffix = '六轨就绪' if engine.config.get('multistem') else f'旧分轨流程就绪；升级 {HYBRID_COMPONENT_VERSION} 可排除和声并分轨识谱'
                 if sys.platform == 'win32' and not engine.config.get('accelerated_stages', True):
                     suffix = f'旧组件：升级至 {HYBRID_COMPONENT_VERSION} 可启用全阶段 CUDA'
                 self.engine_status.setText(f'GAME medium / MuScriptor {self.model_choice.currentData()} · {suffix}')
@@ -541,6 +549,7 @@ class TranscriptionDialog(ServiceDialog):
         self.update_account()
 
     def update_output(self):
+        self.edit_beats_button.setEnabled(not self.busy and isinstance(self.result, EventResult))
         from ..transcription.refinement import eligible
         rich = self.generation_mode.currentData() == 'rich_chords'
         self.description.setText(
@@ -558,7 +567,8 @@ class TranscriptionDialog(ServiceDialog):
             widget.setEnabled(not self.busy and bool(playable))
         self.preview_mode.model().item(1).setEnabled(bool(self.media_dir and (self.media_dir / 'vocals.wav').exists()))
         self.preview_mode.model().item(2).setEnabled(self.score is not None and bool(self.score.notes))
-        for index, stem in ((3, 'other'), (4, 'bass'), (5, 'background')):
+        for index, stem in ((3, 'other'), (4, 'bass'), (5, 'background'), (6, 'lead_vocals'),
+                            (7, 'guitar'), (8, 'piano'), (9, 'drums')):
             self.preview_mode.model().item(index).setEnabled(bool(self.media_dir and (self.media_dir / (stem + '.wav')).exists()))
         self.apply_source.setEnabled(not self.busy and self.result is not None and not isinstance(self.result, MidiResult))
         midi = isinstance(self.result, MidiResult)
@@ -1164,6 +1174,30 @@ class TranscriptionDialog(ServiceDialog):
         selected = self.section_list.currentIndex()
         self.section_list.clear()
         info = self.score.root.get('transcription', {}) if self.score else {}
+        rhythm = self.result.metadata.get('rhythm_analysis', {}) if self.result else {}
+        key = self.result.metadata.get('key_analysis', {}) if self.result else {}
+        candidates = key.get('candidates', [])
+        messages = []
+        details = []
+        if rhythm:
+            method = '人工修正' if self.result.analysis.get('rhythm_user_edited') else rhythm.get('detector', '')
+            messages.append(f'节奏：{self.result.bpm:g} BPM · 首拍候选 {len(self.result.analysis.get("downbeats_ms", []))}')
+            details.append('拍点检测：' + method)
+            if rhythm.get('bpm_candidates') and not self.result.analysis.get('rhythm_user_edited'):
+                details.append('候选 BPM：' + ' / '.join(f'{v:g}' for v in rhythm['bpm_candidates']))
+            if rhythm.get('needs_review') and not self.result.analysis.get('rhythm_user_edited'):
+                messages.append('检测器存在半速／倍速分歧，请试听并修正拍点。')
+            if rhythm.get('fallback_reason'):
+                details.append('神经拍点不可用，已使用本地信号分析：' + rhythm['fallback_reason'])
+        if candidates:
+            messages.append('调性候选：' + ' / '.join(c['label'] for c in candidates[:2])
+                            + ('（有歧义）' if key.get('ambiguous') else '（参考）'))
+            details.append('调性分析范围：' + ('全曲' if key.get('scope') == 'whole_song' else '当前选段')
+                           + '；候选排名不代表准确率，不自动移调。')
+        self.song_analysis_info.setText('\n'.join(messages))
+        self.song_analysis_info.setToolTip('\n'.join(details))
+        self.song_analysis_info.setVisible(bool(messages))
+        self.song_analysis_info.setFixedHeight(self.song_analysis_info.fontMetrics().lineSpacing() * len(messages) + 6)
         if self.score:
             notes = self.score.notes
             self.statistics.setText(
@@ -1448,7 +1482,9 @@ class TranscriptionDialog(ServiceDialog):
             path = None
             self.media_offset = 0
             if self.result and not self.audition_source and self.media_dir:
-                candidate = self.media_dir / {0: 'original.wav', 1: 'vocals.wav', 3: 'other.wav', 4: 'bass.wav', 5: 'background.wav'}[mode]
+                candidate = self.media_dir / {0: 'original.wav', 1: 'vocals.wav', 3: 'other.wav', 4: 'bass.wav',
+                                              5: 'background.wav', 6: 'lead_vocals.wav', 7: 'guitar.wav',
+                                              8: 'piano.wav', 9: 'drums.wav'}[mode]
                 if candidate.exists():
                     path = candidate
             if path is None and mode == 0 and self.source_dir and (self.source_dir / 'source.audio').exists():
@@ -1472,6 +1508,22 @@ class TranscriptionDialog(ServiceDialog):
             self.pending_seek = None
         elif status == QMediaPlayer.MediaStatus.EndOfMedia:
             self.playback_finished()
+
+    def edit_beats(self):
+        if self.busy or not isinstance(self.result, EventResult):
+            return
+        from .rhythm_editor import RhythmEditor
+        self.stop_preview()
+        self.flush_remap()
+        if not self.persist_draft():
+            return
+        editor = RhythmEditor(self.result, self.seek.value(), self)
+        if editor.exec() and editor.result is not None:
+            # A new reference must not overwrite a saved/manual draft version.
+            self.result = editor.result
+            self.draft_id, self.edited = None, False
+            self.auto_bpm.setChecked(True)
+            self.remap()
 
     def playback_finished(self):
         self.stop_preview()

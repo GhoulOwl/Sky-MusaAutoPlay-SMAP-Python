@@ -107,6 +107,9 @@ class StageCache:
 
 
 def run_hybrid(task):
+    if task.engine.config.get('multistem'):
+        from .multistem import run_multistem
+        return run_multistem(task)
     config, work, directory = task.engine.config, task.work, task.directory
     origin = json.loads((work / "request.json").read_text(encoding="utf-8"))
     source_sha = digest(work / "source.audio", task.cancelled.is_set)
@@ -311,14 +314,16 @@ def clear_hybrid_audio(directory):
 
 
 def prune_hybrid_audio(directory, budget=1024**3, protected=()):
-    base = Path(directory) / "transcription/hybrid-cache/separation"
+    root = Path(directory) / "transcription/hybrid-cache"
     removed = 0
     groups = []
-    for folder in base.iterdir() if base.exists() else ():
-        if not folder.is_dir() or folder.name.startswith("."):
-            continue
-        files = [folder / name for name in STEMS if (folder / name).is_file()]
-        groups.append(((folder / "cache.json").stat().st_mtime, folder, files))
+    for stage in ('separation', 'vocal_split'):
+        base = root / stage
+        for folder in base.iterdir() if base.exists() else ():
+            if not folder.is_dir() or folder.name.startswith('.') or not (folder / 'cache.json').is_file():
+                continue
+            files = list(folder.glob('*.wav'))
+            groups.append(((folder / 'cache.json').stat().st_mtime, folder, files))
     total = sum(path.stat().st_size for _, _, files in groups for path in files)
     for _, folder, files in sorted(groups):
         if total <= budget:

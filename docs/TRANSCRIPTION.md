@@ -1,6 +1,12 @@
 # AI 扒谱：本地混合引擎
 
-默认使用 Demucs＋GAME＋MuScriptor：Demucs 分轨、GAME medium 识别人声、MuScriptor small 识别背景，
+Hybrid 4.0.0 增加主唱去和声与器乐分轨识谱：六轨 Demucs 先分离混合人声、鼓、贝斯、吉他、钢琴、其他，
+UVR Karaoke 2 从混合人声中提取主唱，GAME medium 识别主唱，MuScriptor small / medium 分别识别
+贝斯、吉他、钢琴和其他。和声人声不参与识谱，鼓轨不生成音高事件。
+各轨共享一次节奏／调性分析；支持拍点修正和分轨试听。实现、验证和已知边界见
+[六轨优化说明](TRANSCRIPTION_MULTISTEM_REVIEW_2026-10-29.md)。
+
+以下原混合流程仍适用于 3.x 组件：Demucs 分轨、GAME medium 识别人声、MuScriptor small 识别背景，
 MuScriptor medium 可选；也可切换到 MuScriptor 原混音后端。音频和识别在本机处理，不上传到模型服务。
 钢琴默认完整主旋律＋稀疏和弦，仍可选择稀疏单音伴奏；小提琴默认完整主旋律，单音伴奏可选。
 不明确的旋律区域保留休止并标记待修正。生成结果是可编辑初稿。

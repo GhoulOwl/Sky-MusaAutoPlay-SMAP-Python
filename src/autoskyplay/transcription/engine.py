@@ -20,9 +20,9 @@ from ..score import atomic_json
 
 ENGINE_VERSION = "1.1.0"
 MUSCRIPTOR_VERSION = '2.2.0'
-HYBRID_COMPONENT_VERSION = '3.2.0'
+HYBRID_COMPONENT_VERSION = '4.0.0'
 COMPONENT_BACKENDS = {'2.0.0': 'muscriptor', '2.1.0': 'muscriptor', MUSCRIPTOR_VERSION: 'muscriptor',
-                      '3.0.0': 'hybrid', '3.1.0': 'hybrid', HYBRID_COMPONENT_VERSION: 'hybrid'}
+                      '3.0.0': 'hybrid', '3.1.0': 'hybrid', '3.2.0': 'hybrid', HYBRID_COMPONENT_VERSION: 'hybrid'}
 SUPPORTED_VERSIONS = {"1.0.0", ENGINE_VERSION, *COMPONENT_BACKENDS}
 MAX_COMPONENT_BYTES = 6 * 1024 ** 3
 
@@ -93,15 +93,24 @@ def select_hybrid_engine(directory, model='small', device='auto', background_mix
     unified = root/'build/hybrid-venv'/suffix
     runtime_files = [root/'build/hybrid-venv/runtime.json']
     if unified.is_file() and runtime_files[0].is_file():
+        runtime = json.loads(runtime_files[0].read_text(encoding='utf-8'))
+        if runtime.get('version') != HYBRID_COMPONENT_VERSION:
+            raise ValueError('六轨运行环境需要升级，请运行 scripts/prepare_hybrid.py')
         commands = {name: [str(unified), str(Path(__file__).with_name('hybrid_worker.py')), '--stage', name]
-                    for name in ('separate', 'game', 'background', 'features')}
+                    for name in ('separate', 'game', 'background', 'features', 'vocal_split')}
     else:
-        runtime_files += [root/'build/muscriptor-venv/runtime.json', root/'build/game-venv/runtime.json']
+        raise ValueError('六轨后端需要新的独立运行环境，请运行 scripts/prepare_hybrid.py')
     if any(not Path(c[0]).is_file() for c in commands.values()):
         raise ValueError('混合运行环境尚未安装')
+    if require_models:
+        from .multistem_models import ASSETS
+        for name in ('demucs', 'karaoke'):
+            path = root / 'build/multistem-models' / ASSETS[name]['filename']
+            if not path.is_file() or path.stat().st_size != ASSETS[name]['size']:
+                raise ValueError('六轨模型尚未准备，请运行 scripts/prepare_hybrid.py')
     return Engine([], (directory/'transcription/models').resolve(), HYBRID_COMPONENT_VERSION, 'hybrid', model, device,
-                  dict(commands=commands, separation_models=str(root/'build/transcription-models'),
-                       background_mix=background_mix, accelerated_stages=True,
+                  dict(commands=commands, separation_models=str(root/'build/multistem-models'),
+                       background_mix=background_mix, accelerated_stages=True, multistem=True,
                        runtime_identity=source_runtime_identity(*runtime_files)))
 
 
@@ -127,13 +136,15 @@ def find_engine(directory: Path, backend='legacy') -> Engine | None:
             if actual != backend:
                 raise ValueError()
             if backend == 'hybrid':
-                commands = {name: [str(executable), '--stage', name]
-                            for name in ('separate', 'game', 'background', 'features')}
+                multistem = metadata['version'] == '4.0.0'
+                stages = ('separate', 'game', 'background', 'features', 'vocal_split') if multistem else (
+                    'separate', 'game', 'background', 'features')
+                commands = {name: [str(executable), '--stage', name] for name in stages}
                 return Engine([str(executable)], (directory/'transcription/models').resolve(),
                               metadata['version'], backend, config=dict(commands=commands,
                               runtime_identity=hashlib.sha256((root/'engine.json').read_bytes()).hexdigest(),
                               separation_models=str(root/'models'), background_mix='with_drums',
-                              accelerated_stages=metadata['version'] != '3.0.0'))
+                              accelerated_stages=metadata['version'] != '3.0.0', multistem=multistem))
             return Engine([str(executable)], (directory / 'transcription/models').resolve()
                           if backend == 'muscriptor' else root / 'models', metadata['version'], backend,
                           config=dict(runtime_identity=hashlib.sha256((root/'engine.json').read_bytes()).hexdigest()))
@@ -252,6 +263,11 @@ def install_engine(archive: Path, directory: Path, cancelled=lambda: False, prog
                 raise ValueError("扒谱组件缺少引擎或模型")
             if backend == 'hybrid' and 'models/models.json' not in files:
                 raise ValueError('混合组件缺少固定分轨模型清单')
+            if manifest['version'] == '4.0.0':
+                from .multistem_models import ASSETS
+                for asset in ASSETS.values():
+                    if files.get('models/' + asset['filename']) != asset['sha256']:
+                        raise ValueError('六轨组件缺少固定模型或模型身份不匹配')
             copied, last_progress = 0, -1
             for member in members:
                 if cancelled():

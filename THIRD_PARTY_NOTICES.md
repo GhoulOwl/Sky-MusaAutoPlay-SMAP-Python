@@ -79,3 +79,19 @@ Windows Hybrid / MuScriptor 组件使用 PyTorch 官方 2.8.0 + cu128 发行包�
 主程序随包保留 imageio-ffmpeg 发行元数据及许可证；组件的 `licenses/` 目录收录各依赖分发中的
 LICENSE/COPYING/NOTICE 与 FFmpeg 的 `-L` 输出，
 主程序仍按 GPL-3.0 分发。
+
+## 六轨与歌曲分析组件（Hybrid 4.0.0）
+
+六轨分离使用作者的 [HTDemucs-6s](https://huggingface.co/adefossez/HTDemucs-6s)，
+固定修订 `3c5ee475be622df764938de97e4281a7b07ffa58`，Demucs 代码及模型沿用其 MIT 许可。
+拍点／小节首拍使用 [Beat This!](https://github.com/CPJKU/beat_this) 1.1.0 和 final0 权重，
+其代码与发布权重为 MIT。ONNX Runtime 使用 MIT 许可。具体下载地址、大小与 SHA256
+固定在 `src/autoskyplay/transcription/multistem_models.py`；只在准备组件时下载，推理时读取本地文件。
+
+主唱去和声使用 [UVR 公开模型](https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models)
+中的 `UVR_MDXNET_KARA_2.onnx`。MDX 频谱通道约定及模型参数参考 UVR 和
+[python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator)；本项目直接调用 ONNX Runtime，
+不依赖其下载器或音频导出流程。模型参数参考 `TRvlvr/application_data` 修订
+`4621ca87e42bba17738b6ca0d0b5348763eb68ad` 的 MDX model_data_new.json。
+该公开模型仓库未提供可检索的独立 LICENSE；不能用应用或推理库的许可替代权重授权，
+对外分发包含该权重的组件前需补齐授权依据。本次仅本地构建与验证，未发布组件。

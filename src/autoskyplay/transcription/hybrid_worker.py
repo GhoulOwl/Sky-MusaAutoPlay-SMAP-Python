@@ -20,13 +20,14 @@ def main():
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", choices=["separate", "game", "background", "features"])
+    parser.add_argument("--stage", choices=["separate", "game", "background", "features", "vocal_split"])
     parser.add_argument("--work")
     parser.add_argument("--models")
     parser.add_argument("--model", choices=["small", "medium"], default="small")
     parser.add_argument("--device", choices=["auto", "cpu", "mps", "cuda"], default="auto")
     parser.add_argument("--parent", type=int, default=0)
     parser.add_argument("--separate-only", action="store_true")
+    parser.add_argument('--separation-model', choices=['four', 'six'], default='four')
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--probe-devices", action="store_true")
     args = parser.parse_args()
@@ -37,13 +38,16 @@ def main():
     args.game_source = None
     if args.check:
         import demucs
+        import onnxruntime
         import torch
+        from beat_this.inference import Audio2Beats
         from inference.me_infer import SegmentationEstimationInferenceModel
         from muscriptor import TranscriptionModel
 
         from autoskyplay.transcription.engine import HYBRID_COMPONENT_VERSION
 
         assert callable(TranscriptionModel.load_model) and callable(SegmentationEstimationInferenceModel)
+        assert callable(Audio2Beats) and callable(onnxruntime.InferenceSession)
         emit("ready", engine=HYBRID_COMPONENT_VERSION, torch=torch.__version__, demucs=demucs.__version__,
              cuda_runtime=torch.version.cuda, cuda_available=torch.cuda.is_available())
         return
@@ -63,6 +67,8 @@ def main():
             from autoskyplay.transcription.game_worker import run
         elif args.stage == "background":
             from autoskyplay.transcription.muscriptor_worker import run
+        elif args.stage == 'vocal_split':
+            from autoskyplay.transcription.karaoke_worker import run
         else:
             from autoskyplay.transcription.hybrid_features import run
         run(args)
