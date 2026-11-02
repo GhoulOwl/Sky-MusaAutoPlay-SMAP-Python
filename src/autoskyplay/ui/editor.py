@@ -34,7 +34,10 @@ from PySide6.QtWidgets import (
 from ..midi import SKY_MIDI
 from ..playback import Player, State
 from ..score import Note, Score, unique_path
+from ..transcription.cache import DownloadCache
+from ..transcription.lyrics import valid_lyrics
 from . import style
+from .lyrics import ScrollingLyrics
 from .netease import NeteaseSongDialog
 from .widgets import button, label, time_text
 
@@ -508,6 +511,7 @@ class EditorDialog(QDialog):
             }
             QLabel#editorTitle { font-size: 17px; font-weight: 700; }
             QLabel#infoTitle { font-size: 17px; font-weight: 700; padding-bottom: 6px; }
+            QLabel#editorCurrentLyric { font-size: 15px; font-weight: 600; }
             QLabel#coverPreview { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; }
             QPushButton#editorKey { padding: 3px 8px; }
             QPushButton#editorKey:pressed { background: palette(highlight); color: palette(highlighted-text); }
@@ -658,8 +662,13 @@ class EditorDialog(QDialog):
 
         keyboard_panel = QFrame()
         keyboard_panel.setObjectName("editorKeyboard")
-        keyboard_layout = QVBoxLayout(keyboard_panel)
-        keyboard_layout.setContentsMargins(8, 7, 8, 8)
+        bottom_layout = QHBoxLayout(keyboard_panel)
+        bottom_layout.setContentsMargins(8, 7, 8, 8)
+        self.lyric_view = ScrollingLyrics()
+        bottom_layout.addWidget(self.lyric_view, 1)
+        keys_panel = QWidget()
+        keyboard_layout = QVBoxLayout(keys_panel)
+        keyboard_layout.setContentsMargins(8, 0, 8, 0)
         keyboard_layout.setSpacing(5)
         keyboard_layout.addWidget(label("光遇按键映射 · 点击试听 / 播放时同步亮起", "muted"),
                                   alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -684,7 +693,11 @@ class EditorDialog(QDialog):
             timer.timeout.connect(lambda key=key: self.key_buttons[key].setDown(False))
             self.key_timers.append(timer)
         keyboard_layout.addWidget(keys_widget, alignment=Qt.AlignmentFlag.AlignHCenter)
+        bottom_layout.addWidget(keys_panel, 1)
         root.addWidget(keyboard_panel)
+        self.lyrics_active = True
+        self.finished.connect(lambda _: setattr(self, "lyrics_active", False))
+        self.prepare_lyrics()
         self.roll.changed.connect(self.record)
         self.roll.cursor_changed.connect(self.seek_playback)
         self.roll.extent_changed.connect(self.update_extent)
@@ -708,6 +721,52 @@ class EditorDialog(QDialog):
             action.activated.connect(callback)
         for control in self.findChildren(QPushButton):
             control.setAutoDefault(False)
+
+    def prepare_lyrics(self):
+        metadata = self.score.root.get('transcription')
+        self.lyric_origin_ms = 0
+        if not isinstance(metadata, dict) or metadata.get('source') != 'netease':
+            return
+        song_id = str(metadata.get('song_id', ''))
+        origin = metadata.get('source_start')
+        if not song_id.isdigit() or not isinstance(origin, (int, float)) or not math.isfinite(origin):
+            return
+        self.lyric_origin_ms = origin * 1000
+        saved = metadata.get('lyrics')
+        if valid_lyrics(saved, song_id):
+            self.lyric_view.set_lyrics(saved)
+            return
+        # Older saved scores predate embedded lyrics. Recover them in the background.
+        if not all(hasattr(self.host, name) for name in ('run_job', 'netease_client', 'store')):
+            return
+        directory = getattr(self.host.store, 'directory', None)
+        if not directory:
+            return
+        self.lyric_view.set_lyrics(None, '正在获取歌词…')
+        cache = DownloadCache(directory)
+
+        def work():
+            lyrics = cache.get_lyrics(song_id)
+            if not valid_lyrics(lyrics, song_id):
+                lyrics = self.host.netease_client.lyrics(song_id)
+                if not valid_lyrics(lyrics, song_id):
+                    raise ValueError('歌词格式异常')
+                cache.put_lyrics(song_id, lyrics)
+            return lyrics
+
+        def loaded(lyrics):
+            if self.lyrics_active and valid_lyrics(lyrics, song_id):
+                self.lyric_view.set_lyrics(lyrics)
+                metadata['lyrics'] = lyrics
+                self.update_position()
+            elif self.lyrics_active:
+                self.lyric_view.set_lyrics(None, '歌词获取失败')
+
+        def failed(_):
+            if self.lyrics_active:
+                self.lyric_view.set_lyrics(None, '歌词获取失败')
+
+        self.host.run_job(work, loaded, failed)
 
     def edit_info(self):
         self.info_dialog.reload()
@@ -741,6 +800,7 @@ class EditorDialog(QDialog):
         )
         self.roll.viewport().update()
         self.ruler.update()
+        self.lyric_view.set_position(self.lyric_origin_ms + self.roll.cursor_beat * self.score.ms_per_beat)
 
     def seek_playback(self, beat):
         if self.player.state in (State.PLAYING, State.PAUSED):
@@ -954,6 +1014,7 @@ class EditorDialog(QDialog):
             if choice == QMessageBox.StandardButton.Save and not self.save():
                 event.ignore()
                 return
+        self.lyrics_active = False
         self.preview_timer.stop()
         event.accept()
 

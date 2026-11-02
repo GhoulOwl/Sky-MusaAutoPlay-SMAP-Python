@@ -207,3 +207,50 @@ def test_dragging_a_note_changes_pitch_and_time_and_can_be_undone(editor, qtbot)
     assert note.key == 9 and note.time_ms == 4000
     editor.undo()
     assert editor.score.notes[1].key == 7 and editor.score.notes[1].time_ms == 3500
+
+
+def test_editor_scrolling_lyrics_follow_song_clock_and_seeks(editor, qtbot):
+    lyrics = {'song_id': '1', 'format': 'yrc', 'lines': [
+        {'start': 60000, 'duration': 2500, 'text': '你好', 'words': [
+            {'start': 60000, 'duration': 500, 'text': '你'},
+            {'start': 61000, 'duration': 500, 'text': '好'}]},
+        {'start': 63000, 'duration': 1000, 'text': '<下一句>', 'words': []},
+    ]}
+    score = Score('歌', bpm=120, notes=[Note(0, 0), Note(1, 4000)],
+                  root={'transcription': {'source': 'netease', 'song_id': '1',
+                                          'source_start': 60, 'lyrics': lyrics}})
+    dialog = EditorDialog(editor.host, score)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    view = dialog.lyric_view
+    assert '你' in view.current.text() and view.current.text().count('color:') == 1
+    assert view.following.text() == '<下一句>'
+    dialog.progress.setValue(2500)  # 1.25 s into the selection, 61.25 s into the song
+    assert view.current.text().count('color:') == 2
+    dialog.preview()
+    qtbot.waitUntil(lambda: dialog.roll.cursor_beat > 2.6, timeout=1500)
+    dialog.preview()
+    assert dialog.player.state == State.PAUSED
+    dialog.progress.setValue(6500)
+    assert view.previous.text() == '你好' and view.current.text() == '&lt;下一句&gt;'
+    dialog.stop_preview(rewind=True)
+    assert view.current.text().count('color:') == 1
+    assert len(dialog.key_buttons) == 15 and dialog.key_buttons[0].isVisible()
+    dialog.close()
+
+
+def test_editor_lyric_scope_and_lrc_fallback(editor, qtbot):
+    lyric = {'song_id': '1', 'format': 'lrc', 'lines': [
+        {'start': 5000, 'duration': 0, 'text': '逐行歌词', 'words': []},
+    ]}
+    score = Score('歌', notes=[Note(0, 0)], root={'transcription': {
+        'source': 'netease', 'song_id': '1', 'source_start': 5, 'lyrics': lyric}})
+    dialog = EditorDialog(editor.host, score)
+    qtbot.addWidget(dialog)
+    assert dialog.lyric_view.current.text() == '逐行歌词'
+    dialog.close()
+    score.root['transcription']['source'] = 'local_audio'
+    dialog = EditorDialog(editor.host, score)
+    qtbot.addWidget(dialog)
+    assert dialog.lyric_view.current.text() == '暂无歌词'
+    dialog.close()

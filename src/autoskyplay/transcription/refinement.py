@@ -476,7 +476,7 @@ class CandidateStore:
         try:
             staging.save(ident, song, candidate.result, child, data['params'], edited=True,
                                  source=drafts.path(candidate.parent_id), media=drafts.path(candidate.parent_id),
-                                 title=child.name)
+                                 title=child.name, lyrics=data.get('lyrics'))
             shutil.copy2(self.path(candidate.ident)/'local-events.json', staging.path(ident)/'refinement-local-events.json')
             os.replace(staging.path(ident), drafts.path(ident))
         finally:

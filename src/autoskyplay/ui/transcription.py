@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import html
 import queue
 import shutil
 import sys
@@ -12,7 +13,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QIcon, QImage, QPixmap
+from PySide6.QtGui import QIcon, QImage, QPalette, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QSplitter,
@@ -54,6 +56,7 @@ from ..transcription.engine import (
 from ..transcription.engine import find_engine as find_runtime
 from ..transcription.events import EventResult
 from ..transcription.local import MidiResult, read_midi
+from ..transcription.lyrics import lyric_line, valid_lyrics
 from ..transcription.melody import export_midi
 from ..transcription.models import ModelStore
 from ..transcription.performance import generation_mode
@@ -89,6 +92,9 @@ class TranscriptionDialog(ServiceDialog):
         self.setMinimumSize(980, 740)
         self.song = self.audio = self.result = self.score = self.task = None
         self.cover = None
+        self.lyrics = None
+        self.lyrics_state = ''
+        self.lyrics_generation = 0
         self.busy = self.saved = self.installing = self.edited = False
         self.restoring = False
         self.draft_id = None
@@ -250,7 +256,12 @@ class TranscriptionDialog(ServiceDialog):
         roll_row.addWidget(self.roll, 1)
         central.addLayout(roll_row, 1)
         zoom = QHBoxLayout()
-        self.context_label = label("识别完成后显示光遇 15 键曲谱", "muted")
+        self.context_label = label("", "muted")
+        self.context_label.setTextFormat(Qt.TextFormat.RichText)
+        self.context_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.context_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.context_label.setMinimumHeight(32)
+        self.context_label.setMaximumHeight(56)
         self.context_label.setWordWrap(True)
         zoom.addWidget(self.context_label, 1)
         for title, action in (("−", lambda: self.roll.zoom(.8)), ("+", lambda: self.roll.zoom(1.25)),
@@ -825,6 +836,8 @@ class TranscriptionDialog(ServiceDialog):
             self.status.setText(('已使用下载缓存。' if job.cached else '') + '拖动两端选择范围，单击波形定位试听。')
             self.update_song_card()
             self.persist_draft()
+            if not local_path and not (self.lyrics and self.lyrics.get('song_id') == self.song.id):
+                self.load_lyrics()
         def finished(_):
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
@@ -865,6 +878,67 @@ class TranscriptionDialog(ServiceDialog):
         self.source_job = None
         self.source_dir = None
         self.wave_data = None
+
+    def reset_lyrics(self):
+        self.lyrics_generation += 1
+        self.lyrics = None
+        self.lyrics_state = ''
+        self.context_label.clear()
+        self.context_label.setToolTip('')
+
+    def load_lyrics(self):
+        if not self.song or not self.song.id.isdigit():
+            return
+        song_id = self.song.id
+        self.lyrics_generation += 1
+        generation = self.lyrics_generation
+        self.lyrics = None
+        self.lyrics_state = '正在获取歌词…'
+        cache = DownloadCache(self.host.store.directory)
+
+        def work():
+            cached = cache.get_lyrics(song_id)
+            if valid_lyrics(cached, song_id):
+                return cached
+            lyrics = self.client.lyrics(song_id)
+            if not valid_lyrics(lyrics, song_id):
+                raise ValueError('歌词格式异常')
+            cache.put_lyrics(song_id, lyrics)
+            return lyrics
+
+        def loaded(lyrics):
+            if generation != self.lyrics_generation or not self.song or self.song.id != song_id:
+                return
+            self.lyrics = lyrics
+            self.lyrics_state = '暂无歌词' if not lyrics.get('lines') else ''
+            self.update_lyrics(self.waveform.cursor * 1000)
+            self.persist_draft()
+
+        def failed(_):
+            if generation == self.lyrics_generation:
+                self.lyrics_state = '歌词获取失败'
+                self.update_lyrics(self.waveform.cursor * 1000)
+
+        self.job(work, loaded, failed)
+
+    def update_lyrics(self, position_ms):
+        line = lyric_line(self.lyrics, position_ms)
+        if not line:
+            lines = self.lyrics.get('lines', []) if isinstance(self.lyrics, dict) else []
+            upcoming = lines[0]['text'] if lines else ''
+            self.context_label.setToolTip(upcoming)
+            self.context_label.setText('前奏 · 下一句：' + html.escape(upcoming) if upcoming
+                                       else html.escape(self.lyrics_state))
+            return
+        self.context_label.setToolTip(line['text'])
+        words = line.get('words', [])
+        if words:
+            accent = self.palette().color(QPalette.ColorRole.Highlight).name()
+            text = ''.join(f'<span style="color:{accent}">' + html.escape(word['text']) + '</span>'
+                           if word['start'] <= position_ms else html.escape(word['text']) for word in words)
+        else:
+            text = html.escape(line['text'])
+        self.context_label.setText(text)
 
     def set_selection(self, start, end):
         start, end = round(start, 2), round(end, 2)
@@ -983,7 +1057,7 @@ class TranscriptionDialog(ServiceDialog):
         self.statistics.setText('')
         self.seek.setValue(0)
         self.roll.set_score(None)
-        self.context_label.setText('识别完成后显示光遇 15 键曲谱')
+        self.reset_lyrics()
         self.draft_status.setText('草稿将在识别后自动保存')
 
     def cancel_task(self):
@@ -1051,6 +1125,7 @@ class TranscriptionDialog(ServiceDialog):
         self.roll.set_position(position if not self.audition_source else
                                position + (self.start_time.value() - self.result_start()) * 1000)
         self.waveform.cursor = (self.start_time.value() if self.audition_source or not self.result else self.result_start()) + position / 1000
+        self.update_lyrics(self.waveform.cursor * 1000)
         self.waveform.update()
 
     def parameters(self):
@@ -1225,9 +1300,6 @@ class TranscriptionDialog(ServiceDialog):
             *[f"{clock_text(s['start_ms']/1000)}—{clock_text(s['end_ms']/1000)} · {s['reason']}"
               for s in info.get('harmony_review', [])[:40]]]))
         self.seek.setRange(0, round(max(duration, self.score.duration_ms if self.score else 0)))
-        self.context_label.setText(f'对应原曲 {clock_text(self.result_start())} · 只读预览，点击定位'
-                                  + (' · 人工编辑版本' if self.edited else '')
-                                  + (' · ' + info['warnings'][0] if info.get('warnings') else ''))
         self.result_title.setText('曲谱预览 · ' + ('已编辑' if self.edited else '已生成' if self.score and self.score.notes else '待修正'))
         self.update_roll_grid()
 
@@ -1238,13 +1310,23 @@ class TranscriptionDialog(ServiceDialog):
         self.roll.grid_offset_ms = self.grid_offset.value() if hasattr(self, 'grid_offset') else 0
         self.roll.viewport().update()
 
+    def attach_score_lyrics(self):
+        if not self.score or not self.song or not isinstance(self.lyrics, dict):
+            return
+        metadata = self.score.root.get('transcription')
+        if (isinstance(metadata, dict) and metadata.get('source') == 'netease'
+                and str(metadata.get('song_id', '')) == self.song.id
+                and self.lyrics.get('song_id') == self.song.id):
+            metadata['lyrics'] = copy.deepcopy(self.lyrics)
+
     def persist_draft(self):
         if not self.result or not self.song:
             return True
         try:
+            self.attach_score_lyrics()
             self.draft_id = self.drafts.save(self.draft_id, self.song, self.result, self.score, self.parameters(),
                                             edited=self.edited, saved=self.saved, media=self.media_dir,
-                                            source=self.source_dir, title=self.draft_title)
+                                            source=self.source_dir, title=self.draft_title, lyrics=self.lyrics)
             self.draft_status.setText('草稿已自动保存' + (' · 已保存到曲库' if self.saved else ''))
             directory = self.drafts.path(self.draft_id)
             if (directory / 'original.wav').exists() or (directory / 'vocals.wav').exists():
@@ -1308,6 +1390,14 @@ class TranscriptionDialog(ServiceDialog):
         self.release_source()
         self.restoring = True
         self.draft_id, self.song, self.result, self.score = ident, song, result, score
+        self.lyrics = data.get('lyrics')
+        if not valid_lyrics(self.lyrics, song.id):
+            metadata = score.root.get('transcription', {}) if score else {}
+            embedded = metadata.get('lyrics') if isinstance(metadata, dict) else None
+            self.lyrics = embedded if (result.metadata.get('source') == 'netease'
+                                       and valid_lyrics(embedded, song.id)) else None
+        self.lyrics_state = ('暂无歌词' if result.metadata.get('source') == 'netease'
+                             and (not self.lyrics or not self.lyrics.get('lines')) else '')
         self.edited, self.saved = data['edited'], data['saved']
         self.draft_title = data.get('title')
         directory = self.drafts.path(ident)
@@ -1359,6 +1449,8 @@ class TranscriptionDialog(ServiceDialog):
         self.status.setText('草稿与源文件已恢复，可直接编辑或重新处理。' if self.audio else
                             '草稿已恢复；此旧草稿未保留源文件，请恢复音频。')
         self.refresh_history()
+        if self.lyrics is None and result.metadata.get('source') == 'netease':
+            self.load_lyrics()
 
     def delete_draft(self):
         item = self.history_list.currentItem()
@@ -1586,10 +1678,17 @@ class TranscriptionDialog(ServiceDialog):
         self.stop_preview()
         self.host.stop()
         self.host.release_manual()
+        self.attach_score_lyrics()
         editor = EditorDialog(self.host, self.score, draft_mode=True)
         editor.exec()
         if editor.saved:
             self.score = copy.deepcopy(editor.score)
+            metadata = self.score.root.get('transcription', {})
+            if self.song and isinstance(metadata, dict) and metadata.get('source') == 'netease':
+                lyrics = metadata.get('lyrics')
+                if valid_lyrics(lyrics, self.song.id):
+                    self.lyrics = copy.deepcopy(lyrics)
+                    self.lyrics_state = '' if lyrics['lines'] else '暂无歌词'
             self.score.path = None
             self.draft_title = self.score.name
             self.edited, self.saved = True, False
@@ -1622,6 +1721,7 @@ class TranscriptionDialog(ServiceDialog):
         if not self.score:
             return
         try:
+            self.attach_score_lyrics()
             saved = self.host.store.add_score(copy.deepcopy(self.score))
             self.host.show_page(0)
             self.host.refresh()

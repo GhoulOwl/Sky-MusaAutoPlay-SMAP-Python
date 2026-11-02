@@ -472,6 +472,36 @@ class NeteaseClient:
         except httpx.HTTPError as exc:
             raise NeteaseError("专辑封面下载失败，请检查网络后重试，或使用手动设置封面") from exc
 
+    def lyrics(self, identifier):
+        """Prefer timed words, with the legacy line endpoint as a fallback."""
+        from .transcription.lyrics import parse_lrc, parse_yrc
+
+        identifier = song_id(str(identifier))
+        error = None
+        try:
+            data = self.request('/lyric/new', id=identifier)
+            yrc = data.get('yrc') or {}
+            lrc = data.get('lrc') or {}
+            if not isinstance(yrc, dict) or not isinstance(lrc, dict):
+                raise NeteaseError('网易云歌词格式异常')
+            lines = parse_yrc(yrc.get('lyric') or '')
+            if lines:
+                return dict(song_id=identifier, format='yrc', lines=lines)
+            lines = parse_lrc(lrc.get('lyric') or '')
+            if lines:
+                return dict(song_id=identifier, format='lrc', lines=lines)
+        except (NeteaseError, TypeError, AttributeError) as exc:
+            error = exc
+        try:
+            data = self.request('/lyric', id=identifier)
+            lrc = data.get('lrc') or {}
+            if not isinstance(lrc, dict):
+                raise NeteaseError('网易云歌词格式异常')
+            lines = parse_lrc(lrc.get('lyric') or '')
+            return dict(song_id=identifier, format='lrc' if lines else 'none', lines=lines)
+        except (NeteaseError, TypeError, AttributeError) as exc:
+            raise NeteaseError('歌词获取失败，请稍后重新选择歌曲') from (error or exc)
+
     def playback_audio(self, identifier) -> NeteaseAudio:
         identifier = song_id(str(identifier))
         data = self.request("/song/url/v1", id=identifier, level="standard").get("data")

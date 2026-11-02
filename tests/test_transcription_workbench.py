@@ -290,3 +290,198 @@ def test_cached_draft_uses_retained_source_after_remapping(qtbot, tmp_path, monk
     restored.flush_remap()
     assert not restored.restore_audio.isVisible() and restored.begin.isEnabled()
     window.close()
+
+
+def test_netease_lyrics_follow_source_and_result_positions(qtbot, tmp_path, monkeypatch):
+    window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    populate(dialog)
+    dialog.lyrics = {
+        'song_id': dialog.song.id, 'format': 'yrc', 'lines': [
+            {'start': 60000, 'duration': 3000, 'text': '你好', 'words': [
+                {'start': 60000, 'duration': 500, 'text': '你'},
+                {'start': 61500, 'duration': 500, 'text': '好'}]},
+            {'start': 63000, 'duration': 1000, 'text': '<下一句>', 'words': []},
+        ],
+    }
+    dialog.lyrics_state = ''
+    dialog.set_selection(61, 64)
+    dialog.wave_seek(62)
+    dialog.poll()
+    assert dialog.waveform.cursor == 62
+    assert dialog.context_label.text().count('color:') == 2
+    dialog.wave_seek(63.5)
+    dialog.poll()
+    assert '&lt;下一句&gt;' in dialog.context_label.text()
+    dialog.preview_mode.setCurrentIndex(2)
+    dialog.roll_seek(750)
+    dialog.poll()
+    assert dialog.waveform.cursor == 60.75
+    assert dialog.context_label.text().count('color:') == 1
+    dialog.persist_draft()
+    ident = dialog.draft_id
+    assert dialog.drafts.load(ident)[0]['lyrics'] == dialog.lyrics
+    dialog.reset_lyrics()
+    dialog.draft_id = None
+    item = next(dialog.history_list.item(i) for i in range(dialog.history_list.count())
+                if dialog.history_list.item(i).data(Qt.ItemDataRole.UserRole) == ident)
+    dialog.open_draft(item)
+    dialog.poll()
+    assert dialog.lyrics['lines'][0]['text'] == '你好'
+    window.close()
+
+
+def test_lyric_load_failure_and_late_song_result(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    dialog.song = NeteaseSong('1', '旧歌', '', '', '')
+    gate = threading.Event()
+    def delayed(_):
+        gate.wait(3)
+        return {'song_id': '1', 'format': 'lrc', 'lines': [
+            {'start': 0, 'duration': 0, 'text': '旧歌词', 'words': []}]}
+    monkeypatch.setattr(dialog.client, 'lyrics', delayed)
+    dialog.load_lyrics()
+    dialog.reset_lyrics()
+    dialog.song = NeteaseSong('2', '新歌', '', '', '')
+    gate.set()
+    qtbot.waitUntil(lambda: not window.jobs)
+    assert dialog.lyrics is None and '旧歌词' not in dialog.context_label.text()
+    def failed(_):
+        raise ValueError('offline')
+    monkeypatch.setattr(dialog.client, 'lyrics', failed)
+    dialog.load_lyrics()
+    qtbot.waitUntil(lambda: dialog.lyrics_state == '歌词获取失败')
+    assert dialog.song.id == '2' and dialog.lyrics is None
+    window.close()
+
+
+def test_lyrics_are_embedded_when_transcription_score_is_saved(qtbot, tmp_path, monkeypatch):
+    from autoskyplay.score import load_score
+
+    window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    populate(dialog)
+    dialog.result.metadata.update(source='netease', song_id='1')
+    dialog.lyrics = {'song_id': '1', 'format': 'lrc', 'lines': [
+        {'start': 60000, 'duration': 0, 'text': '原曲歌词', 'words': []}]}
+    dialog.remap()
+    dialog.save_score()
+    saved = load_score(next(window.store.songs_dir.glob('*.json')))
+    assert saved.root['transcription']['lyrics'] == dialog.lyrics
+    from autoskyplay.ui.editor import EditorDialog
+    editor = EditorDialog(window, saved)
+    qtbot.addWidget(editor)
+    assert editor.lyric_view.current.text() == '原曲歌词'
+    editor.close()
+    window.close()
+
+
+def test_editor_recovers_lyrics_for_older_netease_score(qtbot, tmp_path, monkeypatch):
+    from autoskyplay.ui.editor import EditorDialog
+
+    window, workbench = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    calls = []
+    lyrics = {'song_id': '1', 'format': 'lrc', 'lines': [
+        {'start': 60000, 'duration': 0, 'text': '旧曲谱歌词', 'words': []}]}
+    monkeypatch.setattr(window.netease_client, 'lyrics', lambda song_id: calls.append(song_id) or lyrics)
+    score = Score('旧曲谱', notes=[Note(0, 0)], root={'transcription': {
+        'source': 'netease', 'song_id': '1', 'source_start': 60}})
+    editor = EditorDialog(window, score)
+    qtbot.addWidget(editor)
+    qtbot.waitUntil(lambda: editor.lyric_view.current.text() == '旧曲谱歌词')
+    assert calls == ['1'] and editor.score.root['transcription']['lyrics'] == lyrics
+    editor.close()
+    workbench.close()
+    window.close()
+
+
+def test_editor_lyric_fetch_error_does_not_block_editing(qtbot, tmp_path, monkeypatch):
+    from autoskyplay.ui.editor import EditorDialog
+
+    window, workbench = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    def unavailable(_):
+        raise ValueError('offline')
+    monkeypatch.setattr(window.netease_client, 'lyrics', unavailable)
+    score = Score('旧曲谱', notes=[Note(0, 0)], root={'transcription': {
+        'source': 'netease', 'song_id': '1', 'source_start': 60}})
+    editor = EditorDialog(window, score)
+    qtbot.addWidget(editor)
+    qtbot.waitUntil(lambda: editor.lyric_view.current.text() == '歌词获取失败')
+    editor.roll.add_note(3, 1)
+    assert len(editor.score.notes) == 2
+    editor.dirty = False
+    editor.close()
+    workbench.close()
+    window.close()
+
+
+def test_editor_ignores_lyric_response_after_close(qtbot, tmp_path, monkeypatch):
+    import threading
+
+    from autoskyplay.ui.editor import EditorDialog
+
+    window, workbench = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    started, release = threading.Event(), threading.Event()
+    def delayed(_):
+        started.set()
+        release.wait(3)
+        return {'song_id': '1', 'format': 'lrc', 'lines': [
+            {'start': 0, 'duration': 0, 'text': '迟到的歌词', 'words': []}]}
+    monkeypatch.setattr(window.netease_client, 'lyrics', delayed)
+    score = Score('旧曲谱', notes=[Note(0, 0)], root={'transcription': {
+        'source': 'netease', 'song_id': '1', 'source_start': 0}})
+    editor = EditorDialog(window, score)
+    qtbot.addWidget(editor)
+    qtbot.waitUntil(started.is_set)
+    editor.close()
+    release.set()
+    qtbot.waitUntil(lambda: not window.jobs)
+    assert editor.lyric_view.current.text() == '正在获取歌词…'
+    assert 'lyrics' not in editor.score.root['transcription']
+    workbench.close()
+    window.close()
+
+
+def test_lyrics_show_upcoming_line_during_intro_and_seek(qtbot, tmp_path, monkeypatch):
+    window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    populate(dialog)
+    dialog.lyrics = {'song_id': '1', 'format': 'yrc', 'lines': [
+        {'start': 61000, 'duration': 2000, 'text': '你<好>', 'words': [
+            {'start': 61000, 'duration': 500, 'text': '你'},
+            {'start': 61500, 'duration': 500, 'text': '<好>'}]},
+    ]}
+    dialog.lyrics_state = ''
+    dialog.roll_seek(0)
+    dialog.poll()
+    assert dialog.context_label.text() == '前奏 · 下一句：你&lt;好&gt;'
+    assert 'color:' not in dialog.context_label.text()
+    dialog.roll_seek(1250)
+    dialog.poll()
+    assert '前奏' not in dialog.context_label.text()
+    assert dialog.context_label.text().count('color:') == 1
+    dialog.roll_seek(0)
+    dialog.poll()
+    assert dialog.context_label.text().startswith('前奏')
+    window.close()
+
+
+def test_open_draft_recovers_lyrics_embedded_in_score(qtbot, tmp_path, monkeypatch):
+    window, dialog = window_and_dialog(qtbot, tmp_path, monkeypatch)
+    populate(dialog)
+    lyrics = {'song_id': '1', 'format': 'lrc', 'lines': [
+        {'start': 60000, 'duration': 0, 'text': '草稿中的歌词', 'words': []}]}
+    dialog.result.metadata.update(source='netease', song_id='1')
+    dialog.score.root['transcription'].update(source='netease', song_id='1', lyrics=lyrics)
+    dialog.lyrics = None
+    assert dialog.persist_draft()
+    ident = dialog.draft_id
+    assert dialog.drafts.load(ident)[0]['lyrics'] is None
+    dialog.draft_id = None
+    item = next(dialog.history_list.item(i) for i in range(dialog.history_list.count())
+                if dialog.history_list.item(i).data(Qt.ItemDataRole.UserRole) == ident)
+    monkeypatch.setattr(dialog.client, 'lyrics', lambda _: pytest.fail('不应重新请求'))
+    dialog.open_draft(item)
+    dialog.poll()
+    assert dialog.lyrics == lyrics
+    assert dialog.context_label.text() == '草稿中的歌词'
+    window.close()
