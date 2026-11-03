@@ -190,7 +190,11 @@ class PreviewRoll(PianoRoll):
         self.clip_duration = max(duration, self.score.duration_ms)
         self.total_beats = max(4, math.ceil(self.clip_duration / self.score.ms_per_beat) + 1)
         self.rebuild()
-        self.scene().setSceneRect(0, 0, self.total_beats * self.pixels_per_beat, 15 * self.row_height)
+        width = self.total_beats * self.pixels_per_beat
+        clip_width = self.clip_duration / self.score.ms_per_beat * self.pixels_per_beat
+        if clip_width > self.viewport().width():
+            width = max(width, clip_width + self.viewport().width() / 2)
+        self.scene().setSceneRect(0, 0, width, 15 * self.row_height)
 
     def fit(self):
         self.pixels_per_beat = max(2, (self.viewport().width() - 12) / self.total_beats)
@@ -203,7 +207,10 @@ class PreviewRoll(PianoRoll):
     def set_position(self, ms):
         self.cursor_beat = ms / self.score.ms_per_beat
         if self.follow:
-            self.ensureVisible(QRectF(self.cursor_beat * self.pixels_per_beat, 0, 1, 1), 40, 0)
+            viewport_width = self.viewport().width()
+            clip_width = self.clip_duration / self.score.ms_per_beat * self.pixels_per_beat
+            offset = self.cursor_beat * self.pixels_per_beat - viewport_width / 2
+            self.horizontalScrollBar().setValue(round(offset) if clip_width > viewport_width else 0)
         self.viewport().update()
 
     def drawBackground(self, painter, rect):

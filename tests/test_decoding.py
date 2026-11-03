@@ -10,6 +10,7 @@ from autoskyplay.transcription.decoding import (
     strict_decode,
     worker_failure_message,
 )
+from autoskyplay.transcription.task import EngineFailure
 
 EOS = 'chunk 16 (seek=80.0s) did not emit EOS within 2000 tokens (this is only raised under --strict-eos)'
 
@@ -64,6 +65,13 @@ def test_precise_error_uses_actual_source_and_original_time():
     assert details['error_code'] == 'decoder_incomplete'
     assert details['decoder_failure']['chunk'] == 16
     assert eos_failure(RuntimeError('not an EOS failure')) is None
+
+
+@pytest.mark.parametrize('model,action', [('small', '请手动切换到 medium'), ('medium', '手动调整模型或所选范围')])
+def test_decoder_failure_prompts_manual_model_change_without_recommending_current_model(model, action):
+    message, _ = worker_failure_message(RuntimeError(EOS), model=model, cpu_retry_exhausted=True)
+    assert action in message
+    assert '已自动切换 CPU 重试但仍未完成' in message and '可尝试 CPU' not in message
 
 
 def test_native_beam_retry_is_last_bounded_attempt_with_full_input():
@@ -146,3 +154,111 @@ def test_pitched_decoder_masks_only_drum_tokens_and_preserves_native_controls(mo
     assert args[-1] == [3, 5]
     assert model._generate_token_stream(conditions, seek, 1, 2000, False, 1., 1., False,
                                         forbidden_tokens=Tensor([1]))[-1] == [1, 3, 5]
+
+
+RECOVERY_WORKER = '''
+import argparse, json, pathlib, sys
+from autoskyplay.transcription.events import EventResult, ModelNote
+p = argparse.ArgumentParser()
+for name in ('work', 'models', 'parent', 'model', 'device'):
+    p.add_argument('--' + name, default='small' if name == 'model' else None)
+a = p.parse_args()
+work = pathlib.Path(a.work)
+assert a.model == 'small'
+assert (work/'source.audio').read_bytes() == b'complete original audio'
+assert json.loads((work/'request.json').read_text()) == dict(
+    start=0, length=94.85, audio_source='other', input_origin_seconds=193.27)
+error = 'chunk 11 (seek=55.0s) did not emit EOS within 2000 tokens'
+if a.device == 'auto':
+    (work/'partial.json').write_text('MPS partial')
+    (work/'events.json').write_text('MPS incomplete output')
+    sys.stderr.write('MPS decoding failed: ' + error)
+    print(json.dumps(dict(stage='error', message=error, actual_device='mps', error_code='decoder_incomplete',
+        device_error=error, decoding_attempts=[dict(precision='float32', beam_size=2, completed=False)])))
+    sys.exit(1)
+assert a.device == 'cpu'
+assert not (work/'partial.json').exists() and not (work/'events.json').exists()
+sys.stderr.write('CPU complete')
+metadata = dict(device='cpu', model=a.model, decoding_attempts=[dict(precision='float32', completed=True)])
+EventResult([ModelNote(60, 0, 1000, 'acoustic_piano', 0)], 94850, metadata=metadata).save(work/'events.json')
+print(json.dumps(dict(stage='done', **metadata)))
+'''
+
+
+def recovery_task(tmp_path, script=RECOVERY_WORKER):
+    task = fake_task(tmp_path, script)
+    task.engine = replace(task.engine, backend='muscriptor', device='auto')
+    (task.work/'request.json').write_text(json.dumps(dict(
+        start=0, length=94.85, audio_source='other', input_origin_seconds=193.27)))
+    (task.work/'source.audio').write_bytes(b'complete original audio')
+    return task
+
+
+def test_mps_decoder_failure_keeps_selected_model_and_prompts_manual_switch(tmp_path):
+    task = recovery_task(tmp_path)
+    try:
+        with pytest.raises(EngineFailure) as failure:
+            task._run_engine()
+        assert '请手动切换到 medium' in str(failure.value)
+        assert failure.value.details['error_code'] == 'decoder_incomplete'
+        assert task.engine.model == 'small'
+        assert 'MPS decoding failed' in (task.work/'engine.stderr').read_text()
+        assert not (task.work/'cpu-retry.stderr').exists()
+        assert not list(task.work.glob('.cpu-retry-*'))
+        assert not any(e.get('fallback') for e in task.events.queue)
+    finally:
+        task.close()
+
+
+@pytest.mark.parametrize('requested,actual,backend', [
+    ('auto', 'mps', 'muscriptor'),
+    ('cpu', 'mps', 'muscriptor'), ('mps', 'mps', 'muscriptor'), ('cuda', 'mps', 'muscriptor'),
+    ('auto', 'cpu', 'muscriptor'), ('auto', 'cuda', 'muscriptor'), ('auto', 'mps', 'game'),
+])
+def test_decoder_error_never_changes_model_or_retries_on_another_device(tmp_path, requested, actual, backend):
+    script = RECOVERY_WORKER.replace("if a.device == 'auto':", 'if True:').replace(
+        "actual_device='mps'", f"actual_device='{actual}'")
+    task = recovery_task(tmp_path, script)
+    try:
+        with pytest.raises(EngineFailure) as failure:
+            task._run_engine(replace(task.engine, backend=backend, device=requested))
+        assert failure.value.details['error_code'] == 'decoder_incomplete'
+        assert failure.value.details['actual_device'] == actual
+        assert not any(e.get('fallback') for e in task.events.queue)
+        assert not (task.work/'cpu-retry.stderr').exists()
+    finally:
+        task.close()
+
+
+def test_failed_cpu_decoder_retry_is_bounded_and_both_attempts_remain_diagnosable(tmp_path):
+    # Existing OOM recovery still uses the same model on CPU. If that decoder
+    # fails too, retain both logs and give the manual model-switch prompt.
+    script = RECOVERY_WORKER.replace("if a.device == 'auto':", "if a.device == 'auto':\n    error = 'MPS out of memory'")
+    script = script.replace("error_code='decoder_incomplete',\n        device_error=error",
+                            "error_code='accelerator_oom',\n        device_error=error")
+    script = script.replace("sys.stderr.write('CPU complete')", '''
+sys.stderr.write('CPU decoding failed: ' + error)
+print(json.dumps(dict(stage='error', message=error, actual_device='cpu', error_code='decoder_incomplete',
+                     device_error=error, decoding_attempts=[dict(precision='float32', completed=False)])))
+sys.exit(1)
+''')
+    task = recovery_task(tmp_path, script)
+    try:
+        with pytest.raises(EngineFailure) as failure:
+            task._run_engine()
+        assert '已自动切换 CPU 重试但仍未完成' in str(failure.value)
+        assert '可尝试 CPU' not in str(failure.value)
+        assert '请手动切换到 medium' in str(failure.value)
+        assert task.engine.model == 'small'
+        from autoskyplay.transcription.diagnostics import save_failure
+        diagnostic = save_failure(tmp_path, task.work, str(failure.value), failure.value.details)
+        report = json.loads(diagnostic.read_text())
+        assert report['actual_device'] == 'cpu' and report['device_fallback']['from_device'] == 'mps'
+        assert report['requested_device'] == 'auto'
+        assert len(report['decoding_attempts']) == 1
+        assert 'CPU decoding failed' in (diagnostic.parent/'cpu-retry.stderr').read_text()
+        assert 'MPS decoding failed' in (diagnostic.parent/'engine.stderr').read_text()
+        assert not list(task.work.glob('.cpu-retry-*'))
+        assert sum(e.get('stage') == 'device' for e in task.events.queue) == 1
+    finally:
+        task.close()

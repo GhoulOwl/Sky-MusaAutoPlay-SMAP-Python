@@ -96,7 +96,7 @@ def strict_decode(load, consume, release, *, device, notice=lambda message: None
     raise AssertionError('precision retry exhausted without success or exception')
 
 
-def worker_failure_message(exc, request=None):
+def worker_failure_message(exc, request=None, *, cpu_retry_exhausted=False, model=None):
     failure = eos_failure(exc)
     attempts = dict(decoding_attempts=exc.decoding_attempts) if hasattr(exc, 'decoding_attempts') else {}
     if failure is None:
@@ -113,6 +113,12 @@ def worker_failure_message(exc, request=None):
     position = origin + failure['seek_seconds']
     clock = f'{int(position // 60):02d}:{position % 60:04.1f}'
     label = SOURCE_NAMES.get(source, '器乐轨')
+    if model == 'medium':
+        recovery = '可手动调整模型或所选范围后重试。'
+    else:
+        recovery = '请手动切换到 medium 模型后重试。'
+    if cpu_retry_exhausted:
+        recovery = '已自动切换 CPU 重试但仍未完成，' + recovery
     message = (f'{label}在原曲约 {clock} 处未正常结束解码（达到 {failure["token_limit"]} token）；'
-               '本次未保存不完整曲谱，可尝试 CPU 或 medium 模型。')
+               '本次未保存不完整曲谱，' + recovery)
     return message, dict(attempts, error_code='decoder_incomplete', decoder_failure=failure, audio_source=source)

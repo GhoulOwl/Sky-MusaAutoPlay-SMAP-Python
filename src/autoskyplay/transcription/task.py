@@ -258,11 +258,25 @@ class TranscriptionTask:
                     result.metadata.update(device_fallback=fallback, requested_device='auto')
                     result.save(retry / 'events.json')
                 for path in retry.iterdir():
-                    if path.is_file() and path.name not in inputs:
-                        shutil.copyfile(path, work / ('cpu-retry.stderr' if path.name == 'engine.stderr' else path.name))
+                    if path.is_file() and path.name not in (*inputs, 'engine.stderr'):
+                        shutil.copyfile(path, work / path.name)
                 return metadata
+            except EngineFailure as cpu_exc:
+                details = dict(cpu_exc.details, device_fallback=fallback, requested_device='auto')
+                message = str(cpu_exc)
+                if details.get('error_code') == 'decoder_incomplete':
+                    from .decoding import read_request, worker_failure_message
+                    decoder_message, _ = worker_failure_message(
+                        RuntimeError(details.get('device_error', message)), read_request(work),
+                        cpu_retry_exhausted=True, model=engine.model)
+                    message = decoder_message or '自动切换 CPU 重试后仍未完成：' + message
+                raise EngineFailure(message, details) from cpu_exc
             finally:
-                shutil.rmtree(retry, ignore_errors=True)
+                try:
+                    if (retry / 'engine.stderr').is_file():
+                        shutil.copyfile(retry / 'engine.stderr', work / 'cpu-retry.stderr')
+                finally:
+                    shutil.rmtree(retry, ignore_errors=True)
 
     def _run_engine_once(self, engine, work, extra=(), *, fallback=None):
         command = [*engine.command, "--work", str(work), "--models", str(engine.models),
@@ -351,7 +365,9 @@ class TranscriptionTask:
                         log.seek(max(0, size - 65536))
                         tail = log.read().decode('utf-8', errors='replace')
                     request = read_request(work)
-                    decoder_message, decoder_details = worker_failure_message(RuntimeError(tail), request)
+                    decoder_error = RuntimeError(f"{failure_details.get('device_error', '')}\n{tail}")
+                    decoder_message, decoder_details = worker_failure_message(decoder_error, request,
+                                                                              model=engine.model)
                     if decoder_message:
                         error = decoder_message
                         failure_details.update(decoder_details)

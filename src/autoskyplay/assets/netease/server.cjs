@@ -21,6 +21,8 @@ const definitions = {
   '/login/status': ['login_status', []],
   '/logout': ['logout', []],
   '/song/detail': ['song_detail', ['ids']],
+  '/lyric': ['lyric', ['id']],
+  '/lyric/new': ['lyric_new', ['id']],
   '/song/url/v1': ['song_url_v1', ['id', 'level']],
   '/cloudsearch': ['cloudsearch', ['keywords', 'type', 'limit', 'offset']],
 };

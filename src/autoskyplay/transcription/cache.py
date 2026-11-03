@@ -79,6 +79,22 @@ class DownloadCache:
                 return cached
         return None
 
+    def get_lyrics(self, song_id):
+        with _LOCK:
+            self.prune()
+            for _, data, audio in sorted(self._entries(), key=lambda e: e[1]['created'], reverse=True):
+                lyrics = data.get('lyrics')
+                if audio.id == song_id and isinstance(lyrics, dict) and lyrics.get('song_id') == song_id:
+                    return lyrics
+        return None
+
+    def put_lyrics(self, song_id, lyrics):
+        with _LOCK:
+            for directory, data, audio in self._entries():
+                if audio.id == song_id:
+                    data['lyrics'] = lyrics
+                    atomic_json(directory / 'entry.json', data)
+
     def put(self, audio, source):
         # The playback URL (which expires) and credentials are deliberately not stored.
         descriptor = asdict(audio)
@@ -88,8 +104,12 @@ class DownloadCache:
             stage.mkdir()
             try:
                 shutil.copyfile(source, stage / 'source.audio')
-                atomic_json(stage / 'entry.json', dict(created=time.time(), audio=descriptor,
-                                                      size=(stage / 'source.audio').stat().st_size))
+                entry = dict(created=time.time(), audio=descriptor,
+                             size=(stage / 'source.audio').stat().st_size)
+                lyrics = self.get_lyrics(audio.id)
+                if lyrics is not None:
+                    entry['lyrics'] = lyrics
+                atomic_json(stage / 'entry.json', entry)
                 # Replace only the same full/trial variant after a successful download.
                 for directory, _, old in list(self._entries()):
                     if (old.id, old.trial_start, old.trial_end) == (audio.id, audio.trial_start, audio.trial_end):

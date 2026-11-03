@@ -69,7 +69,7 @@ class DraftStore:
             atomic_json(path, data)
             os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
-    def save(self, ident, song, result, score, params, *, edited=False, saved=False, media=None, source=None, title=None):
+    def save(self, ident, song, result, score, params, *, edited=False, saved=False, media=None, source=None, title=None, lyrics=None):
         ident = ident or uuid.uuid4().hex
         directory = self.path(ident)
         directory.mkdir(exist_ok=True)
@@ -114,7 +114,8 @@ class DraftStore:
                     title=title or old.get('title', score.name if score else song.name), id=ident,
                     created=created, created_estimated=old.get('created_estimated', False), updated=now,
                     song=asdict(song), metadata=result.metadata,
-                    params=params, edited=edited, saved=saved, score=score.to_data() if score else None)
+                    params=params, edited=edited, saved=saved, score=score.to_data() if score else None,
+                    lyrics=lyrics)
         atomic_json(directory / 'draft.json', data)
         return ident
 
