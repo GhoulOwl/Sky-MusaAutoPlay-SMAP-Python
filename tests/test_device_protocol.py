@@ -134,7 +134,7 @@ def test_probe_widget_async_success_old_runtime_timeout_and_cached_display(qtbot
     script = tmp_path/'probe.py'
     report = dict(stage='devices', schema=1, cpu={'name': 'Test CPU'}, gpus=[],
                   stages={'muscriptor': 'cpu'}, cuda_unavailable='没有 CUDA')
-    script.write_text('import json\nprint(json.dumps(' + repr(report) + '))\n')
+    script.write_text('import json\nprint(json.dumps(' + repr(report) + '))\n', encoding='utf-8')
     widget = DeviceStatus()
     qtbot.addWidget(widget)
     engine = Engine([sys.executable, str(script)], tmp_path, '2.2.0', 'muscriptor')

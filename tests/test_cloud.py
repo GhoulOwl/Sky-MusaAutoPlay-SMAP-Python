@@ -79,7 +79,7 @@ def test_cover_supports_relative_urls_without_downloading_a_score():
 @pytest.mark.parametrize("status,content,error", [
     (404, b"", httpx.HTTPStatusError),
     (200, b"x" * (2 * 1024 * 1024 + 1), ValueError),
-])
+], ids=["http-error", "oversized-image"])
 def test_cover_rejects_failed_or_oversized_images(status, content, error):
     cloud = CloudClient("https://example.org")
     cloud.client.close()

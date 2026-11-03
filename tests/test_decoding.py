@@ -116,7 +116,7 @@ sys.exit(1)
     assert '2000' in error['message'] and task.result is None
     from pathlib import Path
     diagnostic = Path(error['diagnostic_path'])
-    report = json.loads(diagnostic.read_text())
+    report = json.loads(diagnostic.read_text(encoding='utf-8'))
     assert report['error_code'] == 'decoder_incomplete'
     task.close()
     assert not task.work.exists() and diagnostic.is_file()
@@ -252,7 +252,7 @@ sys.exit(1)
         assert task.engine.model == 'small'
         from autoskyplay.transcription.diagnostics import save_failure
         diagnostic = save_failure(tmp_path, task.work, str(failure.value), failure.value.details)
-        report = json.loads(diagnostic.read_text())
+        report = json.loads(diagnostic.read_text(encoding='utf-8'))
         assert report['actual_device'] == 'cpu' and report['device_fallback']['from_device'] == 'mps'
         assert report['requested_device'] == 'auto'
         assert len(report['decoding_attempts']) == 1
