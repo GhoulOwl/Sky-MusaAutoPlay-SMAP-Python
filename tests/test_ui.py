@@ -63,7 +63,7 @@ def test_about_views_local_log_without_network(qtbot, tmp_path, monkeypatch, exi
 
     monkeypatch.setattr(QDialog, "exec", open_about)
     window.about()
-    assert [url.toLocalFile() for url in opened] == ([str(path)] if exists else [])
+    assert [url.toLocalFile() for url in opened] == ([path.as_posix()] if exists else [])
     if not exists:
         assert window.status.text() == "暂无日志"
     window.close()

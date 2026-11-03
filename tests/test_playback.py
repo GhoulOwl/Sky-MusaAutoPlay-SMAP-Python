@@ -124,10 +124,17 @@ def test_live_or_paused_seek_restores_once_after_silence(paused):
 def test_resume_without_seek_restores_only_remaining_sustain():
     output, player = Output(), Player()
     player.load(Score(notes=[Note(0, 0, 5000)]))
+    progressed = threading.Event()
+
+    def observe_progress():
+        if player.position_ms > 0:
+            progressed.set()
+
+    output.pump = observe_progress
     try:
         player.play(output)
         assert output.fired.wait(1)
-        time.sleep(.02)
+        assert progressed.wait(1)
         player.pause()
         position = player.position_ms
         assert 0 < position < 5000
