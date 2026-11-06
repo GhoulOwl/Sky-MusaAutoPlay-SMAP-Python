@@ -32,7 +32,8 @@ Name: "{group}\AutoSkyPlay"; Filename: "{app}\AutoSkyPlay.exe"
 Name: "{autodesktop}\AutoSkyPlay"; Filename: "{app}\AutoSkyPlay.exe"
 
 [Run]
-Filename: "{app}\AutoSkyPlay.exe"; Description: "Launch AutoSkyPlay"; Flags: nowait postinstall skipifsilent
+; AutoSkyPlay.exe requires elevation, so launch it with Setup's elevated token.
+Filename: "{app}\AutoSkyPlay.exe"; Description: "Launch AutoSkyPlay"; Flags: nowait postinstall runascurrentuser skipifsilent
 
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
