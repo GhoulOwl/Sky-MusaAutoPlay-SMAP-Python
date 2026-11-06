@@ -14,7 +14,8 @@ def save_failure(directory, work, message, details):
     report = dict(message=message, task=work.name,
                   **{k: details[k] for k in ('engine_stage', 'audio_source', 'actual_device', 'error_code',
                                             'decoder_failure', 'device_error', 'decoding_attempts',
-                                            'device_fallback', 'requested_device') if k in details})
+                                            'device_fallback', 'requested_device', 'exit_code',
+                                            'last_stage', 'last_progress') if k in details})
     request = work / 'request.json'
     if request.is_file():
         data = read_request(work)

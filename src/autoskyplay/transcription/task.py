@@ -22,6 +22,7 @@ from .events import EventResult
 from .melody import PitchResult
 
 STAGES = {"decode", "load", "separate", "pitch", "convert", "notice", "device", "done", "error"}
+MAX_WORKER_EVENT_BYTES = 4 * 1024 * 1024
 
 
 class EngineFailure(ValueError):
@@ -294,6 +295,7 @@ class TranscriptionTask:
                 env.pop(name, None)
         env.update(HF_HUB_OFFLINE="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
         lines = queue.Queue(maxsize=100)
+        oversized_event = threading.Event()
         with (work / "engine.stderr").open("wb") as errors:
             self.process = subprocess.Popen(
                 command, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -302,7 +304,14 @@ class TranscriptionTask:
 
             def read_lines():
                 try:
-                    while line := self.process.stdout.readline(8192):
+                    while line := self.process.stdout.readline(MAX_WORKER_EVENT_BYTES + 1):
+                        if len(line) > MAX_WORKER_EVENT_BYTES:
+                            oversized_event.set()
+                            while not line.endswith(b'\n') and not self.cancelled.is_set():
+                                line = self.process.stdout.readline(8192)
+                                if not line:
+                                    break
+                            continue
                         while True:
                             if self.cancelled.is_set():
                                 return
@@ -325,6 +334,7 @@ class TranscriptionTask:
             deadline = time.monotonic() + max(1800, self.length_seconds * 12 + 300)
             done, error, eof = None, None, False
             failure_details = {}
+            last_stage, last_progress, actual_device = None, None, None
             try:
                 while not eof:
                     self.check_cancelled()
@@ -341,6 +351,10 @@ class TranscriptionTask:
                         event = json.loads(line)
                         if not isinstance(event, dict) or event.get("stage") not in STAGES:
                             continue
+                        if event['stage'] == 'device':
+                            actual_device = event.get('actual_device')
+                        if event['stage'] not in ('device', 'notice', 'done', 'error'):
+                            last_stage, last_progress = event['stage'], event.get('progress')
                         if event["stage"] == "done":
                             done = {k: v for k, v in event.items() if k not in ("stage", "progress")}
                         elif event["stage"] == "error":
@@ -355,7 +369,7 @@ class TranscriptionTask:
                     except (ValueError, TypeError):
                         continue
                 code = self.process.wait(timeout=5)
-                if error or code or not done:
+                if error or code or not done or oversized_event.is_set():
                     from .decoding import read_request, worker_failure_message
                     # Older components exposed only a generic error. Recover a
                     # precise decoder cause from the bounded stderr tail too.
@@ -371,8 +385,15 @@ class TranscriptionTask:
                     if decoder_message:
                         error = decoder_message
                         failure_details.update(decoder_details)
-                    failure_details.update(engine_stage=engine.backend, stage_log=str(work / 'engine.stderr'))
-                    raise EngineFailure(error or "本地扒谱引擎异常退出，请重新安装组件或选择更短片段",
+                    failure_details.update(engine_stage=engine.backend, stage_log=str(work / 'engine.stderr'),
+                                           exit_code=code, last_stage=last_stage, last_progress=last_progress)
+                    if actual_device and 'actual_device' not in failure_details:
+                        failure_details['actual_device'] = actual_device
+                    if not error and oversized_event.is_set():
+                        error = '本地扒谱引擎消息超过大小限制，无法读取结果'
+                    elif not error and code == 0 and not done:
+                        error = '本地扒谱引擎已退出，但未收到完成消息；请查看诊断日志'
+                    raise EngineFailure(error or "本地扒谱引擎异常退出，请查看诊断日志",
                                         failure_details)
                 return done
             finally:

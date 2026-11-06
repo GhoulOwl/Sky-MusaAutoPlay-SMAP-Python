@@ -41,6 +41,22 @@ class NeteaseSessionExpired(NeteaseError):
     pass
 
 
+class NeteaseNetworkError(NeteaseError):
+    pass
+
+
+def upstream_error(code, route):
+    if code == -460:
+        return NeteaseError("网易云提示当前网络环境存在风险（-460），请稍后重试")
+    if code == 8821 and route.startswith('/login/qr/'):
+        return NeteaseError("网易云拒绝二维码登录（错误码 8821），请稍后刷新二维码重试")
+    if code in (301, 401):
+        return NeteaseSessionExpired("网易云会话已失效，请重新扫码登录")
+    if code == 403:
+        return NeteaseError("网易云拒绝本次请求（错误码 403），请检查账号状态或稍后重试")
+    return NeteaseError(f"网易云上游请求失败（错误码 {code}），请稍后重试")
+
+
 def validate_port(port: int) -> int:
     if type(port) is not int or not 1 <= port <= 65535:
         raise NeteaseError("网易云服务端口必须是 1–65535 之间的整数")
@@ -288,18 +304,28 @@ class NeteaseClient:
                     json={**params, "cookie": self.cookie, "timestamp": time.time_ns() // 1_000_000},
                 )
                 if reply.status_code != 200:
+                    if reply.status_code == 502:
+                        try:
+                            body = reply.json()
+                        except (ValueError, TypeError):
+                            body = None
+                        if isinstance(body, dict) and body.get('failure_kind') == 'network':
+                            raise NeteaseNetworkError("连接网易云时网络中断或超时，请检查网络后重试")
+                        code = body.get('upstream_code') if isinstance(body, dict) else None
+                        if type(code) is int and -99999 <= code <= 99999:
+                            raise upstream_error(code, route)
                     raise NeteaseError(f"网易云请求失败（HTTP {reply.status_code}），请稍后重试")
                 value = reply.json()
                 if not isinstance(value, dict):
                     raise ValueError()
                 code = value.get("code", 200)
-                if route == "/login/status" and code in (301, 401):
-                    raise NeteaseSessionExpired("网易云会话已失效，请重新扫码登录")
                 if code not in (200, 800, 801, 802, 803):
-                    raise NeteaseError(f"网易云接口返回错误（{code}），请重新登录或稍后重试")
+                    if type(code) is int and -99999 <= code <= 99999:
+                        raise upstream_error(code, route)
+                    raise NeteaseError("网易云接口返回无效错误码，请稍后重试")
                 return value
             except httpx.HTTPError as exc:
-                raise NeteaseError("无法连接网易云服务或请求超时，请检查网络及设置中的服务端口") from exc
+                raise NeteaseNetworkError("无法连接网易云服务或请求超时，请检查网络及设置中的服务端口") from exc
             except (ValueError, TypeError) as exc:
                 if isinstance(exc, NeteaseError):
                     raise
@@ -510,7 +536,16 @@ class NeteaseClient:
                 raise ValueError()
             value = data[0]
             if not value.get("url") or value.get("code", 200) != 200:
-                raise NeteaseError("当前账号无法获取该歌曲音频，可能需要登录、会员或歌曲在当前地区不可用")
+                code = value.get('code')
+                if code in (301, 401):
+                    raise NeteaseSessionExpired("网易云会话已失效，请重新扫码登录")
+                if code == -460:
+                    raise upstream_error(code, '/song/url/v1')
+                if code == -110:
+                    fee = value.get('fee')
+                    reason = ('可能需要会员' if fee == 1 else '可能需要购买歌曲' if fee == 4 else '请检查歌曲权限')
+                    raise NeteaseError(f"当前账号没有该歌曲的播放权限（-110），{reason}")
+                raise NeteaseError("网易云未提供该歌曲的播放地址，请检查歌曲和账号的可用状态")
             duration = float(value.get("time") or 0)
             if not math.isfinite(duration) or duration < 0 or duration > 86_400_000:
                 raise ValueError()
