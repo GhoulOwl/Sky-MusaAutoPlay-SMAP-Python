@@ -13,7 +13,9 @@ from autoskyplay.netease import (
     SERVICE_DIR,
     NeteaseClient,
     NeteaseError,
+    NeteaseNetworkError,
     NeteaseService,
+    NeteaseSessionExpired,
     NeteaseSong,
     check_port,
     song_id,
@@ -40,7 +42,7 @@ def make_client(handler, credential_directory=None):
 
 @pytest.mark.parametrize(('body', 'message'), [
     ({'code': 502, 'upstream_code': -460}, '网络环境存在风险'),
-    ({'code': 502, 'upstream_code': 403}, '上游请求失败（错误码 403）'),
+    ({'code': 502, 'upstream_code': 403}, '网易云拒绝本次请求（错误码 403）'),
     ({'code': 502, 'upstream_code': 'unsafe'}, 'HTTP 502'),
 ])
 def test_gateway_reports_safe_upstream_error_codes(body, message):
@@ -49,6 +51,40 @@ def test_gateway_reports_safe_upstream_error_codes(body, message):
         with pytest.raises(NeteaseError) as exc:
             client.playback_audio('1')
         assert message in str(exc.value)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(('status', 'body', 'error', 'message'), [
+    (502, {'code': 502, 'failure_kind': 'network'}, NeteaseNetworkError, '网络中断或超时'),
+    (502, {'code': 502, 'upstream_code': 301}, NeteaseSessionExpired, '重新扫码登录'),
+    (200, {'code': 8821}, NeteaseError, '拒绝二维码登录'),
+    (200, {'code': -460}, NeteaseError, '网络环境存在风险'),
+])
+def test_qr_errors_keep_their_cause(status, body, error, message):
+    client = make_client(lambda request: httpx.Response(status, json=body))
+    try:
+        with pytest.raises(error, match=message):
+            client.check_qr('key')
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(('item_code', 'fee', 'message'), [
+    (-110, 1, '可能需要会员'),
+    (-110, 4, '可能需要购买歌曲'),
+    (-110, 0, '请检查歌曲权限'),
+    (401, 0, '重新扫码登录'),
+    (-460, 0, '网络环境存在风险'),
+    (404, 0, '未提供该歌曲的播放地址'),
+])
+def test_playback_no_url_distinguishes_known_outcomes(item_code, fee, message):
+    client = make_client(lambda request: httpx.Response(200, json={
+        'code': 200, 'data': [{'id': 1, 'code': item_code, 'url': None, 'fee': fee}],
+    }))
+    try:
+        with pytest.raises(NeteaseError, match=message):
+            client.playback_audio('1')
     finally:
         client.close()
 
@@ -64,19 +100,50 @@ def test_gateway_forwards_only_numeric_upstream_code(tmp_path):
     except OSError:
         pytest.skip('Cannot link the bundled Node runtime')
     shutil.copyfile(SERVICE_DIR / 'server.cjs', bundle / 'server.cjs')
+    shutil.copyfile(SERVICE_DIR / 'xeapi-key.cjs', bundle / 'xeapi-key.cjs')
     upstream = bundle / 'node_modules/@neteasecloudmusicapienhanced/api'
     (upstream / 'util').mkdir(parents=True)
     (upstream / 'module').mkdir()
     (upstream / 'package.json').write_text('{}')
-    (upstream / 'util/request.js').write_text('module.exports = {}')
-    (upstream / 'util/index.js').write_text('exports.cookieToJson = () => ({})')
+    (upstream / 'util/request.js').write_text('''
+global.qrCalls = {};
+global.qrIps = {};
+module.exports = async (uri, data, options) => {
+  if (uri === '/api/song/enhance/player/url/v1')
+    return {body: {forwardedIp: options.ip, randomCNIP: options.randomCNIP, crypto: options.crypto}};
+  const key = data.key;
+  global.qrCalls[key] = (global.qrCalls[key] || 0) + 1;
+  global.qrIps[key] = options.ip || null;
+  if (key === 'network' && global.qrCalls[key] === 1)
+    throw {status: 502, body: {code: 502, msg: 'read ECONNRESET secret'}};
+  if (key === 'offline') throw {status: 502, body: {code: 502, msg: 'connect ETIMEDOUT secret'}};
+  if (key === 'risk') throw {status: 400, body: {code: -460, message: 'secret'}};
+  return {body: {code: 801}, cookie: []};
+};
+''')
+    (upstream / 'util/index.js').write_text('''
+exports.cookieToJson = () => ({});
+exports.generateRandomChineseIP = () => '203.0.113.42';
+exports.generateDeviceId = () => 'test-device';
+''')
+    (upstream / 'util/xeapiKey.js').write_text('''
+const fs = require('node:fs');
+exports.getXeapiPublicKey = async (_, deviceId) => {
+  if (fs.existsSync('key-failure')) throw new Error('unavailable');
+  return {sk: 'test-key', deviceId};
+};
+''')
+    (upstream / 'util/option.js').write_text('module.exports = (query) => ({cookie: query.cookie})')
     modules = ['login_qr_key', 'login_qr_create', 'login_qr_check', 'login_status', 'logout',
                'song_detail', 'lyric', 'lyric_new', 'song_url_v1', 'cloudsearch']
     script = '''
-module.exports = async (query) => {
+module.exports = async (query, request) => {
   if (query.id === '1') throw {status: 400, body: {code: -460, message: 'secret'}, cookie: ['secret']};
   if (query.id === '2') throw {body: {code: '-460', message: 'secret'}};
   if (query.id === '3') throw {body: {code: 'secret'}};
+  if (query.id === '5') return {body: {counts: global.qrCalls, qrIps: global.qrIps}};
+  if (query.id === '6') return request('/api/song/enhance/player/url/v1', {},
+                                      {randomCNIP: query.randomCNIP, crypto: query.crypto});
   throw new Error('secret');
 };
 '''
@@ -94,6 +161,30 @@ module.exports = async (query) => {
                                      json={'id': identifier})
                 assert response.status_code == 502 and response.json() == expected
                 assert 'secret' not in response.text
+            headers = {'Authorization': f'Bearer {service.token}'}
+            for key, expected in [('network', {'code': 801, 'cookie': ''}),
+                                  ('risk', {'code': 502, 'upstream_code': -460}),
+                                  ('offline', {'code': 502, 'failure_kind': 'network'})]:
+                response = http.post(service.base_url + '/login/qr/check', headers=headers, json={'key': key})
+                assert response.json() == expected
+                assert 'secret' not in response.text
+            response = http.post(service.base_url + '/song/url/v1', headers=headers, json={'id': '5'})
+            assert response.json()['counts'] == {'network': 2, 'risk': 1, 'offline': 2}
+            assert response.json()['qrIps'] == {'network': None, 'risk': None, 'offline': None}
+            response = http.post(service.base_url + '/song/url/v1', headers=headers, json={'id': '6'})
+            assert response.json() == {'forwardedIp': '203.0.113.42', 'randomCNIP': True, 'crypto': 'xeapi'}
+    finally:
+        service.close()
+    failed_data = tmp_path / 'failed-data'
+    failed_data.mkdir()
+    (failed_data / 'key-failure').touch()
+    service = NeteaseService(53002, failed_data, bundle=bundle)
+    try:
+        service.ensure_running()
+        with httpx.Client(trust_env=False) as http:
+            response = http.post(service.base_url + '/song/url/v1',
+                                 headers={'Authorization': f'Bearer {service.token}'}, json={'id': '6'})
+            assert response.json() == {'forwardedIp': '203.0.113.42', 'randomCNIP': True, 'crypto': 'eapi'}
     finally:
         service.close()
 
@@ -192,7 +283,7 @@ def test_legacy_song_shape():
 @pytest.mark.parametrize(
     "body, message",
     [
-        ({"code": 301}, "接口返回错误"),
+        ({"code": 301}, "重新扫码登录"),
         ({"code": 200, "songs": []}, "未找到"),
         ({"code": 200, "songs": {}}, "格式发生变化"),
         ({"songs": [{"id": 2, "name": "另一个版本"}]}, "不一致"),
