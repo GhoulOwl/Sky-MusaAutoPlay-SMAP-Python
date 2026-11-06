@@ -288,6 +288,16 @@ class NeteaseClient:
                     json={**params, "cookie": self.cookie, "timestamp": time.time_ns() // 1_000_000},
                 )
                 if reply.status_code != 200:
+                    if reply.status_code == 502:
+                        try:
+                            body = reply.json()
+                        except (ValueError, TypeError):
+                            body = None
+                        code = body.get('upstream_code') if isinstance(body, dict) else None
+                        if type(code) is int and -99999 <= code <= 99999:
+                            if code == -460:
+                                raise NeteaseError("网易云提示当前网络环境存在风险（-460），请稍后重试")
+                            raise NeteaseError(f"网易云上游请求失败（错误码 {code}），请稍后重试")
                     raise NeteaseError(f"网易云请求失败（HTTP {reply.status_code}），请稍后重试")
                 value = reply.json()
                 if not isinstance(value, dict):

@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import socket
 import threading
 from dataclasses import replace
@@ -34,6 +36,66 @@ def make_client(handler, credential_directory=None):
     return NeteaseClient(
         service, transport=httpx.MockTransport(handler), credential_directory=credential_directory
     )
+
+
+@pytest.mark.parametrize(('body', 'message'), [
+    ({'code': 502, 'upstream_code': -460}, '网络环境存在风险'),
+    ({'code': 502, 'upstream_code': 403}, '上游请求失败（错误码 403）'),
+    ({'code': 502, 'upstream_code': 'unsafe'}, 'HTTP 502'),
+])
+def test_gateway_reports_safe_upstream_error_codes(body, message):
+    client = make_client(lambda request: httpx.Response(502, json=body))
+    try:
+        with pytest.raises(NeteaseError) as exc:
+            client.playback_audio('1')
+        assert message in str(exc.value)
+    finally:
+        client.close()
+
+
+def test_gateway_forwards_only_numeric_upstream_code(tmp_path):
+    node = SERVICE_DIR / 'runtime' / ('node.exe' if os.name == 'nt' else 'node')
+    if not node.is_file():
+        pytest.skip('Bundled Node runtime is unavailable')
+    bundle = tmp_path / 'bundle'
+    (bundle / 'runtime').mkdir(parents=True)
+    try:
+        (bundle / 'runtime' / node.name).symlink_to(node)
+    except OSError:
+        pytest.skip('Cannot link the bundled Node runtime')
+    shutil.copyfile(SERVICE_DIR / 'server.cjs', bundle / 'server.cjs')
+    upstream = bundle / 'node_modules/@neteasecloudmusicapienhanced/api'
+    (upstream / 'util').mkdir(parents=True)
+    (upstream / 'module').mkdir()
+    (upstream / 'package.json').write_text('{}')
+    (upstream / 'util/request.js').write_text('module.exports = {}')
+    (upstream / 'util/index.js').write_text('exports.cookieToJson = () => ({})')
+    modules = ['login_qr_key', 'login_qr_create', 'login_qr_check', 'login_status', 'logout',
+               'song_detail', 'lyric', 'lyric_new', 'song_url_v1', 'cloudsearch']
+    script = '''
+module.exports = async (query) => {
+  if (query.id === '1') throw {status: 400, body: {code: -460, message: 'secret'}, cookie: ['secret']};
+  if (query.id === '2') throw {body: {code: '-460', message: 'secret'}};
+  if (query.id === '3') throw {body: {code: 'secret'}};
+  throw new Error('secret');
+};
+'''
+    for name in modules:
+        (upstream / 'module' / f'{name}.js').write_text(script)
+    service = NeteaseService(53002, tmp_path / 'data', bundle=bundle)
+    try:
+        service.ensure_running()
+        with httpx.Client(trust_env=False) as http:
+            for identifier, expected in [('1', {'code': 502, 'upstream_code': -460}),
+                                         ('2', {'code': 502, 'upstream_code': -460}),
+                                         ('3', {'code': 502}), ('4', {'code': 502})]:
+                response = http.post(service.base_url + '/song/url/v1',
+                                     headers={'Authorization': f'Bearer {service.token}'},
+                                     json={'id': identifier})
+                assert response.status_code == 502 and response.json() == expected
+                assert 'secret' not in response.text
+    finally:
+        service.close()
 
 
 @pytest.mark.parametrize(

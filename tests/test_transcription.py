@@ -230,7 +230,56 @@ def test_worker_crash_does_not_generate_a_score(tmp_path):
     while not task.events.empty():
         events.append(task.events.get())
     assert any(e["stage"] == "error" and "异常退出" in e["message"] for e in events)
+    report = json.loads((tmp_path / 'transcription/diagnostics' / task.work.name / 'failure.json').read_text())
+    assert report['exit_code'] == 1
     task.close()
+
+
+def test_worker_accepts_large_complete_json_event(tmp_path):
+    task = fake_task(tmp_path, '''
+import json
+print(json.dumps({'stage': 'pitch', 'progress': 75, 'message': '识别中'}), flush=True)
+print(json.dumps({'stage': 'done', 'slices': [{'offset_ms': i, 'duration_ms': 1234} for i in range(500)]}), flush=True)
+''')
+    try:
+        result = task._run_engine()
+        assert len(result['slices']) == 500
+        assert result['slices'][-1]['offset_ms'] == 499
+    finally:
+        task.close()
+
+
+def test_oversized_worker_event_is_reported_and_not_treated_as_success(tmp_path, monkeypatch):
+    monkeypatch.setattr('autoskyplay.transcription.task.MAX_WORKER_EVENT_BYTES', 256)
+    task = fake_task(tmp_path, '''
+import json
+print(json.dumps({'stage': 'notice', 'message': 'x' * 500}), flush=True)
+print(json.dumps({'stage': 'done', 'engine': '1.0.0'}), flush=True)
+''')
+    try:
+        from autoskyplay.transcription.task import EngineFailure
+        with pytest.raises(EngineFailure, match='消息超过大小限制'):
+            task._run_engine()
+    finally:
+        task.close()
+
+
+def test_worker_reports_missing_completion_and_last_progress(tmp_path):
+    task = fake_task(tmp_path, '''
+import json
+print(json.dumps({'stage': 'device', 'actual_device': 'cpu'}), flush=True)
+print(json.dumps({'stage': 'pitch', 'progress': 75}), flush=True)
+''')
+    try:
+        from autoskyplay.transcription.task import EngineFailure
+        with pytest.raises(EngineFailure, match='未收到完成消息') as exc:
+            task._run_engine()
+        assert exc.value.details['exit_code'] == 0
+        assert exc.value.details['last_stage'] == 'pitch'
+        assert exc.value.details['last_progress'] == 75
+        assert exc.value.details['actual_device'] == 'cpu'
+    finally:
+        task.close()
 
 
 def test_worker_protocol_uses_utf8_despite_inherited_locale(tmp_path, monkeypatch):

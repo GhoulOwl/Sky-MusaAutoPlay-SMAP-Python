@@ -176,12 +176,23 @@ def harmony_windows(result, evidence, blocked):
                         candidates.append(dict(root=root, quality=quality, pitches=pcs,
                                                confidence=round(fit, 4), fit=fit))
             candidates.sort(key=lambda c: (-c['fit'], c['root'], c['quality']))
+        # MOSS is a tie breaker only among independently supported local triads.
+        # Never create a candidate or override a decisive acoustic result.
+        moss = analysis.get('moss_music', {}).get('chords', [])
+        supporting = [m for m in moss if m['start_ms'] <= start + 1 and m['end_ms'] >= end - 1]
+        moss_match = None
+        if not chord and len(supporting) == 1:
+            hint = supporting[0]
+            moss_match = next((c for c in candidates if (c['root'], c['quality']) ==
+                               (hint['root'], hint['quality'])), None)
+            if moss_match:
+                candidates = [moss_match]
         for left, right in allowed_parts(start, end, blocked):
             if right-left >= 80:
-                observations.append(dict(candidates=candidates, decisive=bool(chord),
+                observations.append(dict(candidates=candidates, decisive=bool(chord or moss_match),
                     evidence=dict(start_ms=left, end_ms=right, reliable_beats=bool(reliable),
                                   evidence_ids=sorted({str(n.event_id) for n in active}),
-                                  acoustic_evidence=bool(acoustic))))
+                                  acoustic_evidence=bool(acoustic), moss_corroborated=bool(moss_match))))
     chords = chord_path(observations)
     resolved = {(c['start_ms'], c['end_ms']) for c in chords}
     for w in observations:
@@ -202,6 +213,7 @@ def merge_harmony(chords):
             spans[-1]['evidence_ids'] = sorted(set(spans[-1]['evidence_ids']) | set(chord['evidence_ids']))
             spans[-1]['acoustic_evidence'] |= chord['acoustic_evidence']
             spans[-1]['continuity_resolved'] |= chord.get('continuity_resolved', False)
+            spans[-1]['moss_corroborated'] |= chord.get('moss_corroborated', False)
         else:
             spans.append(dict(chord))
     return spans

@@ -71,6 +71,9 @@ class EventResult:
     def validate(self):
         if not isinstance(self.metadata, dict) or not isinstance(self.analysis, dict):
             raise ValueError('音符事件元数据无效')
+        if 'moss_music' in self.analysis:
+            from .moss import validate_analysis
+            validate_analysis(self.analysis['moss_music'], self.duration_ms)
         if (not math.isfinite(self.duration_ms) or not 0 < self.duration_ms <= 600000
                 or not math.isfinite(self.bpm) or not 30 <= self.bpm <= 300 or len(self.raw_notes) > 200000):
             raise ValueError('音符事件结果无效')

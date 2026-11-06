@@ -60,7 +60,14 @@ const server = http.createServer(async (req, res) => {
     const result = await route.fn(query, request);
     if (!result || !result.body) throw new Error('Invalid upstream response');
     send(res, 200, result.body);
-  } catch (_) {
+  } catch (error) {
+    // Upstream may reject with an answer object, including sensitive cookies
+    // or response text. Forward only a bounded numeric code, never the object.
+    const code = error && error.body && error.body.code;
+    const upstreamCode = typeof code === 'number' ? code :
+      (typeof code === 'string' && /^-?\d{1,5}$/.test(code) ? Number(code) : NaN);
+    if (Number.isInteger(upstreamCode) && Math.abs(upstreamCode) <= 99999)
+      return send(res, 502, { code: 502, upstream_code: upstreamCode });
     send(res, 502, { code: 502 });
   }
 });
