@@ -236,9 +236,6 @@ class Candidate:
 def make_candidate(parent_id, original, baseline, params, local, region):
     if not eligible(original) or not eligible(local):
         raise ValueError('候选来源不兼容')
-    if (baseline.root.get('transcription', {}).get('mode') in ('moss_direct', 'moss_optimized')
-            or params.get('mode') in ('moss_direct', 'moss_optimized')):
-        raise ValueError('MOSS 和弦模式暂不支持局部精修，请先切换到其他编配模式')
     original.validate()
     local.validate()
     if not 0 <= region.context_start <= region.start < region.end <= region.context_end <= original.duration_ms:

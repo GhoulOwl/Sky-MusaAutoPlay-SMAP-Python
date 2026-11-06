@@ -59,8 +59,6 @@ from ..transcription.local import MidiResult, read_midi
 from ..transcription.lyrics import lyric_line, valid_lyrics
 from ..transcription.melody import export_midi
 from ..transcription.models import ModelStore
-from ..transcription.moss import LABELS as MOSS_LABELS
-from ..transcription.moss import MossTask
 from ..transcription.performance import generation_mode
 from ..transcription.source import AudioSource, load_waveform
 from ..transcription.task import TranscriptionTask
@@ -86,7 +84,6 @@ class TranscriptionDialog(ServiceDialog):
     component_progress = Signal(int)
     preview_done = Signal()
     preview_error = Signal(str)
-    moss_finished = Signal(object, str)
 
     def __init__(self, host):
         super().__init__(host, host)
@@ -106,10 +103,6 @@ class TranscriptionDialog(ServiceDialog):
         self.draft_write_failed = False
         self.media_dir = self.source_dir = None
         self.source_job = None
-        self.moss_task = None
-        self.source_moss = None
-        self.source_moss_origin = 0
-        self.moss_finished.connect(self.moss_complete)
         self.wave_data = None
         self.audition_source = False
         self.media_offset = 0
@@ -244,10 +237,6 @@ class TranscriptionDialog(ServiceDialog):
         self.section_list.setToolTip('选择段落定位；待修正段落保留休止。')
         self.section_list.currentIndexChanged.connect(self.section_selected)
         layers.addWidget(self.section_list, 1)
-        self.moss_sections = QComboBox()
-        self.moss_sections.setToolTip('选择 MOSS 推测的段落以定位并选取重新识别范围；结果仅供参考。')
-        self.moss_sections.currentIndexChanged.connect(self.moss_section_selected)
-        layers.addWidget(self.moss_sections, 1)
         self.source_choice = QComboBox(self)
         self.source_choice.hide()
         for title, value in (('自动选择来源', 'auto'), ('人声优先', 'vocals'), ('器乐优先', 'other'), ('保留休止', 'rest')):
@@ -353,12 +342,8 @@ class TranscriptionDialog(ServiceDialog):
         self.generation_mode.addItem('主旋律＋稀疏单音伴奏', 'simple')
         self.generation_mode.addItem('钢琴主旋律＋稀疏和弦', 'chords')
         self.generation_mode.addItem('主旋律＋和弦', 'rich_chords')
-        self.generation_mode.addItem('主旋律＋MOSS 直接和弦（实验）', 'moss_direct')
-        self.generation_mode.addItem('主旋律＋MOSS 优化和弦（实验）', 'moss_optimized')
         self.generation_mode.addItem('仅完整主旋律', 'melody')
-        self.generation_mode.setToolTip('主旋律＋和弦使用本地证据并限制按键；MOSS 直接和弦保留模型和弦，'
-                                        'MOSS 优化和弦优先避开旋律同键及半音近似。按音色推荐仍使用原默认。'
-                                        '声部勾选只控制显示与试听。')
+        self.generation_mode.setToolTip('主旋律＋和弦：依据原曲和声适度补全，有旋律时伴奏对齐旋律起音，总共最多三键；独立器乐段保留原节奏，支持全部音色。按音色推荐仍使用原默认。声部勾选只控制显示与试听。')
         form.addRow('生成模式', self.generation_mode)
         self.rhythm_mode = QComboBox()
         for title, value in (('轻度整理（可靠拍点）', 'gentle'), ('原始时序', 'original'), ('严格对齐', 'strict')):
@@ -450,13 +435,9 @@ class TranscriptionDialog(ServiceDialog):
         self.begin = QPushButton("开始扒谱")
         self.begin.setObjectName("accent")
         self.begin.clicked.connect(self.start_task)
-        self.moss_button = QPushButton('MOSS 和弦／段落分析…')
-        self.moss_button.setToolTip('实验功能：需提供 ace-caption 和 MOSS Q4 模型，分析当前草稿选段。')
-        self.moss_button.clicked.connect(self.start_moss)
         self.cancel_button = QPushButton("取消任务")
         self.cancel_button.clicked.connect(self.cancel_task)
         settings.addWidget(self.begin)
-        settings.addWidget(self.moss_button)
         settings.addWidget(self.cancel_button)
         self.splitter.addWidget(side)
         self.splitter.setSizes([205, 700, 275])
@@ -563,7 +544,7 @@ class TranscriptionDialog(ServiceDialog):
             self.device_status.stop()
         for widget in (self.fetch, self.install_button, self.backend_choice, self.model_choice, self.device_choice, self.history_list, self.start_time, self.end_time, self.all_range, self.short,
                        self.waveform, self.restore_audio, self.instrument, self.generation_mode, self.rhythm_mode,
-                       self.ornaments, self.source_choice, self.apply_source, self.section_list, self.moss_sections):
+                       self.ornaments, self.source_choice, self.apply_source, self.section_list):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
         self.cancel_button.setVisible(busy)
@@ -581,27 +562,16 @@ class TranscriptionDialog(ServiceDialog):
         self.update_account()
 
     def update_output(self):
-        self.moss_button.setEnabled(not self.busy and (self.result is None or isinstance(self.result, EventResult))
-                                    and bool(self.source_dir and (self.source_dir / 'source.audio').is_file()))
         self.edit_beats_button.setEnabled(not self.busy and isinstance(self.result, EventResult))
         from ..transcription.refinement import eligible
         rich = self.generation_mode.currentData() == 'rich_chords'
-        moss_direct = self.generation_mode.currentData() == 'moss_direct'
-        moss_optimized = self.generation_mode.currentData() == 'moss_optimized'
         self.description.setText(
-            'MOSS 优化和弦：避开旋律同键，优先保留可准确演奏的和弦音；必要时用八度加厚。'
-            if moss_optimized else
-            'MOSS 直接和弦：按模型和弦变化起音，不筛选和声、音区或按键数；半音会映射到白键。'
-            if moss_direct else
             '主旋律＋和弦：伴奏对齐主旋律起音，总共最多三键；保留旋律音区和音尾保护，无旋律段沿用原节奏。'
             if rich else '钢琴默认主旋律＋稀疏和弦，小提琴默认主旋律；不确定段落保留休止并标记。')
         self.generation_mode.model().item(self.generation_mode.findData('chords')).setEnabled(
             self.instrument.currentData() == 'Piano')
         self.refine_button.setEnabled(not self.busy and eligible(self.result) and self.score is not None
-                                      and not (moss_direct or moss_optimized)
                                       and self.source_dir is not None and (self.source_dir/'source.audio').exists())
-        self.refine_button.setToolTip('MOSS 和弦模式暂不支持局部精修。' if moss_direct or moss_optimized else
-                                     '仅支持 MuScriptor 原混音草稿；生成候选后对照试听，接受为新版本。')
         for widget in (self.edit, self.save):
             widget.setEnabled(not self.busy and self.score is not None)
         self.midi.setEnabled(not self.busy and self.result is not None)
@@ -1076,8 +1046,6 @@ class TranscriptionDialog(ServiceDialog):
         if self.task:
             self.task.close()
         self.source_overrides = []
-        self.source_moss = None
-        self.populate_moss_sections(None)
         self.section_list.clear()
         self.task = self.result = self.score = None
         self.media_dir = None
@@ -1092,10 +1060,7 @@ class TranscriptionDialog(ServiceDialog):
         self.draft_status.setText('草稿将在识别后自动保存')
 
     def cancel_task(self):
-        if self.moss_task:
-            self.moss_task.cancel()
-            self.status.setText('正在取消 MOSS 分析，已有草稿会保留…')
-        elif self.task and self.task.running:
+        if self.task and self.task.running:
             self.task.cancel()
             self.status.setText('正在取消任务，已有草稿会保留…')
         elif self.installing:
@@ -1119,7 +1084,6 @@ class TranscriptionDialog(ServiceDialog):
                 stage = event['stage']
                 if stage == 'ready':
                     self.result, self.cover = event['result'], event.get('cover') or self.cover
-                    self.source_moss = None
                     self.draft_id = None
                     self.source_overrides = []
                     self.edited = self.saved = False
@@ -1132,10 +1096,9 @@ class TranscriptionDialog(ServiceDialog):
                     self.roll.fit()
                     self.status.setText('识别完成，草稿已自动保存。可试听、调参或编辑。')
                 elif stage == 'finished':
-                    if not self.moss_task:
-                        self.set_busy(False)
-                        self.progress.setRange(0, 100)
-                        self.progress.setValue(100 if self.result else 0)
+                    self.set_busy(False)
+                    self.progress.setRange(0, 100)
+                    self.progress.setValue(100 if self.result else 0)
                 elif stage == 'device':
                     self.device_status.execution(event)
                 elif stage in ('error', 'cancelled', 'notice'):
@@ -1258,80 +1221,6 @@ class TranscriptionDialog(ServiceDialog):
         if section and not self.restoring:
             self.roll_seek(section['start_ms'])
 
-    def moss_section_selected(self, *_):
-        section = self.moss_sections.currentData()
-        if section and not self.restoring:
-            if self.wave_data:
-                self.stop_preview()
-                origin = self.result_start() if self.result else self.source_moss_origin
-                self.set_selection(origin + section['start_ms']/1000, origin + section['end_ms']/1000)
-            if self.result:
-                self.roll_seek(section['start_ms'])
-
-    def start_moss(self):
-        if self.busy or not (self.result is None or isinstance(self.result, EventResult)) or not self.source_dir:
-            return
-        duration = self.result.duration_ms / 1000 if self.result else self.length.value()
-        if duration > 420:
-            self.failed('MOSS 实验分析最长支持 7 分钟；请先选择较短片段。')
-            return
-        exe, _ = QFileDialog.getOpenFileName(self, '选择 ace-caption 运行程序')
-        if not exe:
-            return
-        models = QFileDialog.getExistingDirectory(self, '选择 MOSS Q4 模型目录')
-        if not models:
-            return
-        self.flush_remap()
-        if not self.persist_draft():
-            return
-        absolute = self.result.metadata.get('source_start', 0) if self.result else self.start_time.value()
-        source_origin = self.result.metadata.get('source_origin', 0) if self.result else (self.wave_data or {}).get('origin', 0)
-        start = absolute - source_origin
-        if start < 0:
-            self.failed('草稿源音频时间无效')
-            return
-        self.source_moss_origin = absolute
-        self.moss_task = MossTask(exe, models, self.source_dir / 'source.audio', start, duration, self.moss_finished.emit)
-        self.set_busy(True)
-        self.progress.setRange(0, 0)
-        self.status.setText('正在分析当前片段的和弦与曲式…')
-        self.moss_task.thread.start()
-
-    def moss_complete(self, result, error):
-        cancelled = self.moss_task is not None and self.moss_task.cancelled.is_set()
-        self.moss_task = None
-        self.progress.setRange(0, 100)
-        self.set_busy(False)
-        if cancelled:
-            self.status.setText('MOSS 分析已取消，草稿未改变')
-            return
-        if error:
-            self.failed(error)
-            return
-        if self.result is None:
-            self.source_moss = result
-            self.populate_moss_sections(result)
-            self.status.setText('MOSS 分析完成；可从曲式定位选择范围，再开始扒谱。结果仅供参考。')
-            return
-        if not isinstance(self.result, EventResult):
-            return
-        if self.edited:
-            if not self.persist_draft():
-                return
-            self.draft_id = None
-            self.edited = False
-        self.result.analysis['moss_music'] = result
-        self.remap()
-        self.status.setText('MOSS 分析完成；曲式仅供参考，和弦只用于有音符证据的候选。')
-
-    def populate_moss_sections(self, moss):
-        self.moss_sections.blockSignals(True)
-        self.moss_sections.clear()
-        self.moss_sections.addItem('曲式定位（MOSS 参考）', None)
-        for section in moss.get('sections', []) if moss else []:
-            self.moss_sections.addItem(f"{clock_text(section['start_ms']/1000)}—{clock_text(section['end_ms']/1000)} · {MOSS_LABELS[section['label']]}", section)
-        self.moss_sections.blockSignals(False)
-
     def section_source_menu(self):
         if not self.section_list.currentData() or self.busy:
             return
@@ -1364,8 +1253,6 @@ class TranscriptionDialog(ServiceDialog):
         self.section_list.blockSignals(True)
         selected = self.section_list.currentIndex()
         self.section_list.clear()
-        self.populate_moss_sections(self.result.analysis.get('moss_music') if isinstance(self.result, EventResult)
-                                    else self.source_moss)
         info = self.score.root.get('transcription', {}) if self.score else {}
         rhythm = self.result.metadata.get('rhythm_analysis', {}) if self.result else {}
         key = self.result.metadata.get('key_analysis', {}) if self.result else {}
@@ -1387,16 +1274,6 @@ class TranscriptionDialog(ServiceDialog):
                             + ('（有歧义）' if key.get('ambiguous') else '（参考）'))
             details.append('调性分析范围：' + ('全曲' if key.get('scope') == 'whole_song' else '当前选段')
                            + '；候选排名不代表准确率，不自动移调。')
-        moss = self.result.analysis.get('moss_music') if isinstance(self.result, EventResult) else None
-        if moss:
-            raw = moss.get('raw_chords')
-            messages.append(f"MOSS 参考：{len(raw if raw is not None else moss['chords'])} 个和弦 · {len(moss['sections'])} 个曲式段落")
-            names = ('C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B')
-            details.append('模型识别可能有误；直接模式采用模型输出，常规模式仍要求本地证据。')
-            details.extend(f"{clock_text(c['start_ms']/1000)}—{clock_text(c['end_ms']/1000)} · "
-                           f"{c.get('symbol') or names[c['root']] + ('m' if c.get('quality') == 'minor' else '')}"
-                           + ('（暂不支持）' if 'intervals' in c and c['intervals'] is None else '')
-                           for c in (raw if raw is not None else moss['chords'])[:40])
         self.song_analysis_info.setText('\n'.join(messages))
         self.song_analysis_info.setToolTip('\n'.join(details))
         self.song_analysis_info.setVisible(bool(messages))
@@ -1409,10 +1286,6 @@ class TranscriptionDialog(ServiceDialog):
                 f"待修正 {sum(s['needs_review'] for s in info.get('sections', []))} 段\n"
                 f"半音近似 {sum(bool(n.extra.get('approximated')) for n in notes)} 个 · "
                 f"映射待核对 {sum(bool(n.extra.get('mappingReview')) for n in notes)} 处")
-            optimized = info.get('moss_optimized')
-            if optimized:
-                self.statistics.setText(self.statistics.text() +
-                    f"\n和弦半音省略 {optimized['omitted_chromatic']} · 八度加厚 {optimized['octave_doubled']}")
         for section in info.get('sections', []):
             title = SOURCE_NAMES.get(section['source'], section['source'])
             if info.get('mode') == 'rich_chords':
@@ -1423,14 +1296,6 @@ class TranscriptionDialog(ServiceDialog):
         self.statistics.setToolTip('\n'.join([
             '映射待核对表示光遇音域或半音改编限制；旋律待修正表示缺少可靠旋律证据。有独立证据的伴奏仍可保留。',
             *info.get('warnings', []),
-            *[f"{clock_text(c['start_ms']/1000)} · {c['symbol']} · 省略原谱音级 "
-              + '、'.join(('C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B')[p]
-                         for p in c['omitted_pitch_classes'])
-              for c in info.get('moss_optimized', {}).get('decisions', [])[:40] if c['omitted_pitch_classes']],
-            *[f"{clock_text(c['start_ms']/1000)} · {c['symbol']} · 四声部上限省略原谱音级 "
-              + '、'.join(('C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B')[p]
-                         for p in c.get('omitted_for_voice_limit', []))
-              for c in info.get('moss_optimized', {}).get('decisions', [])[:40] if c.get('omitted_for_voice_limit')],
             *[f"{clock_text(s['start_ms']/1000)}—{clock_text(s['end_ms']/1000)} · {s['reason']}"
               for s in info.get('harmony_review', [])[:40]]]))
         self.seek.setRange(0, round(max(duration, self.score.duration_ms if self.score else 0)))
@@ -1901,8 +1766,6 @@ class TranscriptionDialog(ServiceDialog):
                 event.ignore()
                 return
         self.install_cancelled.set()
-        if self.moss_task:
-            self.moss_task.cancel()
         self.device_status.stop()
         self.stop_preview()
         self.media.setSource(QUrl())

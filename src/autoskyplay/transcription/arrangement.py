@@ -236,7 +236,7 @@ def build_score(result, name, *, threshold=.35, minimum=80, mode='auto', ornamen
     requested_mode = mode
     mode = generation_mode(mode, instrument)
     notes, info = arrange(result, threshold, minimum,
-                          'melody' if mode in ('rich_chords', 'moss_direct', 'moss_optimized') else 'simple' if mode == 'chords' else mode,
+                          'melody' if mode == 'rich_chords' else 'simple' if mode == 'chords' else mode,
                           ornaments, overrides)
     if shift is None:
         shift = phrase_shift(notes)
@@ -275,12 +275,6 @@ def build_score(result, name, *, threshold=.35, minimum=80, mode='auto', ornamen
     if mode == 'rich_chords':
         from .rich_harmony import rich_accompaniment
         rich_accompaniment(score, result, minimum, overrides)
-    elif mode == 'moss_direct':
-        from .moss_arrangement import direct_accompaniment
-        direct_accompaniment(score, result)
-    elif mode == 'moss_optimized':
-        from .moss_voicing import optimized_accompaniment
-        optimized_accompaniment(score, result)
     score.root['transcription']['mapping_review'] = [
         dict(start_ms=n.time_ms, end_ms=n.time_ms + n.duration_ms, reason=n.extra['mappingReview'])
         for n in score.notes if n.extra.get('mappingReview')]

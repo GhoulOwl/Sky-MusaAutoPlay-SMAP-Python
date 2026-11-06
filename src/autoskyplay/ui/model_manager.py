@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
 
 from ..transcription.game_models import GameModelStore
 from ..transcription.models import ModelStore
-from ..transcription.moss_models import MossSourceStore
 
 
 class ModelManager(QDialog):
@@ -36,7 +35,7 @@ class ModelManager(QDialog):
         self.setWindowTitle('扒谱模型管理')
         self.resize(570, 330)
         root = QVBoxLayout(self)
-        intro = QLabel('本地扒谱模型\nMuScriptor 和 MOSS 原始权重从魔搭下载；GAME 从作者 GitHub 发布页下载，校验后启用。\n'
+        intro = QLabel('本地扒谱模型\nMuScriptor 从 ModelScope 社区镜像下载；GAME 从作者 GitHub 发布页下载，校验后启用。\n'
                        '模型长期保存；清理歌曲缓存不会删除模型，删除模型也不会影响草稿。')
         intro.setWordWrap(True)
         root.addWidget(intro)
@@ -44,7 +43,6 @@ class ModelManager(QDialog):
         self.choice.addItem('small · 默认 · 约 412 MB', 'small')
         self.choice.addItem('medium · 可选 · 约 1.23 GB', 'medium')
         self.choice.addItem('GAME medium · 混合人声 · 约 200 MB', 'game-medium')
-        self.choice.addItem('MOSS 原始权重 · 魔搭下载 · 约 18.1 GB，需转 Q4', 'moss-source')
         self.choice.currentIndexChanged.connect(self.refresh)
         root.addWidget(self.choice)
         self.status = QLabel()
@@ -77,13 +75,10 @@ class ModelManager(QDialog):
 
     def refresh(self, *_):
         game = self.choice.currentData() == 'game-medium'
-        moss = self.choice.currentData() == 'moss-source'
-        self.store = (GameModelStore if game else MossSourceStore if moss else ModelStore)(self.host.store.directory)
+        self.store = (GameModelStore if game else ModelStore)(self.host.store.directory)
         size = 'medium' if game else self.choice.currentData()
         self.license_label.setText('GAME 权重：CC BY-NC-SA 4.0 · 仅非商业使用\n'
             '本地导入目录需包含 model.pt、config.yaml、lang_map.json。' if game else
-            'MOSS-Music：Apache 2.0 · 魔搭官方原始权重；下载后需自行转为 GGUF Q4 并准备 ace-caption。\n'
-            '本地导入目录需包含四个 safetensors、config.json、vocab.json、merges.txt、added_tokens.json。' if moss else
             'MuScriptor 权重：CC BY-NC 4.0 · 仅非商业使用\n本地导入目录需包含 model.safetensors、config.json。')
         installed = self.store.installed(size)
         self.status.setText(('已安装，可离线使用' if installed else '尚未安装，或文件需要重新校验')
