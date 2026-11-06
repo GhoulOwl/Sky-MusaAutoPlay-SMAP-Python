@@ -287,9 +287,30 @@ def test_output_mode_buttons_are_exclusive_and_stop_playback(qtbot, tmp_path):
     assert window.perform_button.isChecked()
     assert not window.preview_button.isChecked()
     assert window.player.state == State.STOPPED
+    window.background_button.setEnabled(True)
+    qtbot.mouseClick(window.background_button, Qt.MouseButton.LeftButton)
+    assert window.background_button.isChecked()
+    assert not window.perform_button.isChecked()
     qtbot.mouseClick(window.preview_button, Qt.MouseButton.LeftButton)
     assert window.preview_button.isChecked()
-    assert not window.perform_button.isChecked()
+    assert not window.background_button.isChecked()
+    window.close()
+
+
+def test_game_output_modes_use_separate_backends(qtbot, tmp_path, monkeypatch):
+    window, score = make_window(qtbot, tmp_path)
+    window.select_score(score)
+    window.store.data["countdown"] = 4
+    foreground, background = object(), object()
+    monkeypatch.setattr("autoskyplay.ui.main.WindowsOutput", lambda keys, hold_ms, sustain: foreground)
+    monkeypatch.setattr("autoskyplay.ui.main.WindowsBackgroundOutput", lambda keys, hold_ms, sustain: background)
+    calls = []
+    monkeypatch.setattr(window.player, "play", lambda output, countdown: calls.append((output, countdown)))
+    window.perform_button.setChecked(True)
+    window.start_playback()
+    window.background_button.setChecked(True)
+    window.start_playback()
+    assert calls == [(foreground, 4), (background, 0)]
     window.close()
 
 

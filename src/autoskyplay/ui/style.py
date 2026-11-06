@@ -47,7 +47,20 @@ EXTRA = {
         "JSON / TXT / MIDIをインポートするか、新しい曲譜を作成してください。",
     ],
     "preview": ["试听", "試聽", "Preview", "試聴"],
-    "perform": ["游戏演奏", "遊戲演奏", "Play in game", "ゲーム演奏"],
+    "perform": ["前台演奏", "前景演奏", "Foreground", "前面演奏"],
+    "perform.background": ["后台演奏", "背景演奏", "Background", "バックグラウンド"],
+    "tip.perform": [
+        "前台演奏：开始后在倒计时内切回游戏。", "前景演奏：開始後在倒數結束前切回遊戲。",
+        "Foreground performance: switch to the game before the countdown ends.",
+        "前面演奏：カウントダウンが終わるまでにゲームに切り替えます。",
+    ],
+    "tip.perform.background": [
+        "后台演奏（实验）：在光·遇拿出乐器后开始，可切到其他窗口。",
+        "背景演奏（實驗）：在光·遇拿出樂器後開始，可切換到其他視窗。",
+        "Background performance (experimental): open an instrument in Sky, then start without switching windows.",
+        "バックグラウンド演奏（試験機能）：Skyで楽器を開いてから開始します。別のウィンドウを操作できます。",
+    ],
+    "set.wait": ["前台演奏倒计时", "前景演奏倒數", "Foreground countdown", "前面演奏のカウントダウン"],
     "ready": ["准备就绪", "準備就緒", "Ready", "準備完了"],
     "stop": ["停止", "停止", "Stop", "停止"],
     "play": ["播放", "播放", "Play", "再生"],
@@ -210,7 +223,7 @@ def apply_theme(app, theme: str, font_size: int = 13):
         QPushButton#favorite:hover {{ background: {c["raised"]}; border-color: {c["accent"]}; }}
         QFrame#modeSwitch {{ background: {c["raised"]}; border: 1px solid {c["border"]}; border-radius: 8px; }}
         QPushButton#modeOption {{ background: transparent; border: 1px solid transparent;
-                                  color: {c["muted"]}; padding: 6px 10px; }}
+                                  color: {c["muted"]}; padding: 6px 4px; }}
         QPushButton#modeOption:checked {{ color: {c["accent"]}; font-weight: 700; }}
         QPushButton#modeOption:hover {{ color: {c["text"]}; }}
         QPushButton#modeOption:checked:hover {{ color: {c["accent"]}; }}

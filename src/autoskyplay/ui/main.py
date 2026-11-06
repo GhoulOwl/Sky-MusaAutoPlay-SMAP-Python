@@ -49,7 +49,7 @@ from .. import __version__
 from ..audio import ASSETS, DEFAULT_PITCH, INSTRUMENTS, Mixer, QtAudioOutput
 from ..auth import clear_auth, load_auth, save_auth
 from ..cloud import CloudClient, check_release
-from ..input import GlobalKeyboard, WindowsOutput
+from ..input import GlobalKeyboard, WindowsBackgroundOutput, WindowsOutput
 from ..netease import NeteaseClient, NeteaseService
 from ..playback import Player, State
 from ..score import Score, load_score
@@ -79,6 +79,7 @@ PLAYBACK_ORDERS = (
 )
 PITCH_NAMES = ("C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B")
 PITCH_VALUES = (*range(12, -1, -1), -12, 24)
+PREVIEW_OUTPUT, FOREGROUND_OUTPUT, BACKGROUND_OUTPUT = range(3)
 
 
 def pitch_text(value):
@@ -484,20 +485,24 @@ class MainWindow(QMainWindow):
         self.mode = QButtonGroup(panel)
         self.preview_button = button("preview")
         self.perform_button = button("perform")
-        for index, widget in enumerate((self.preview_button, self.perform_button)):
+        self.background_button = button("perform.background")
+        for mode, widget, tooltip in (
+            (PREVIEW_OUTPUT, self.preview_button, "tip.preview"),
+            (FOREGROUND_OUTPUT, self.perform_button, "tip.perform"),
+            (BACKGROUND_OUTPUT, self.background_button, "tip.perform.background"),
+        ):
             widget.setObjectName("modeOption")
             widget.setCheckable(True)
             widget.setMinimumHeight(44)
-            self.mode.addButton(widget, index)
-            if index:
-                modes.addWidget(label("｜", "muted"))
+            self.mode.addButton(widget, mode)
+            if mode != PREVIEW_OUTPUT:
+                modes.addWidget(label("|", "muted"))
+                if sys.platform != "win32":
+                    widget.setEnabled(False)
+                    tooltip = "perform.windows"
+            widget.setToolTip(style.tr(tooltip))
             modes.addWidget(widget)
         self.preview_button.setChecked(True)
-        self.preview_button.setToolTip(style.tr("tip.preview"))
-        self.perform_button.setToolTip(style.tr("tip.perform"))
-        if sys.platform != "win32":
-            self.perform_button.setEnabled(False)
-            self.perform_button.setToolTip(style.tr("perform.windows"))
         self.mode.idToggled.connect(self.output_mode_changed)
         row.addWidget(mode_switch)
         row.addWidget(label(style.tr("pitch"), "muted"))
@@ -878,12 +883,14 @@ class MainWindow(QMainWindow):
             else:
                 return
         try:
-            if self.mode.checkedId() == 1:
+            mode = self.mode.checkedId()
+            if mode in (FOREGROUND_OUTPUT, BACKGROUND_OUTPUT):
                 from ..audio import SUSTAIN
-                output = WindowsOutput(self.store.data["keys"], self.store.data["hold_ms"],
-                                       sustain=self.store.data.get("sustain_keys", False)
-                                       and self.instrument.currentData() in SUSTAIN)
-                countdown = self.store.data["countdown"]
+                foreground = mode == FOREGROUND_OUTPUT
+                output_type = WindowsOutput if foreground else WindowsBackgroundOutput
+                sustain = self.store.data.get("sustain_keys", False) and self.instrument.currentData() in SUSTAIN
+                output = output_type(self.store.data["keys"], self.store.data["hold_ms"], sustain=sustain)
+                countdown = self.store.data["countdown"] if foreground else 0
             else:
                 if not self.ensure_audio():
                     return
